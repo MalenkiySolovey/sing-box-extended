@@ -2,14 +2,14 @@ package ssmapi
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync/atomic"
 
 	"github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/common/json/badjson"
-	"github.com/sagernet/sing/service/filemanager"
 )
 
 type Cache struct {
@@ -36,8 +36,7 @@ func (s *Service) loadCache() error {
 	if s.cachePath == "" {
 		return nil
 	}
-	basePath := filemanager.BasePath(s.ctx, s.cachePath)
-	cacheBinary, err := filemanager.ReadFile(s.ctx, basePath)
+	cacheBinary, err := s.cacheStore.Read(s.ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -46,7 +45,6 @@ func (s *Service) loadCache() error {
 	}
 	err = s.decodeCache(cacheBinary)
 	if err != nil {
-		filemanager.RemoveAll(s.ctx, basePath)
 		return err
 	}
 	s.cacheMutex.Lock()
@@ -55,29 +53,27 @@ func (s *Service) loadCache() error {
 	return nil
 }
 
-func (s *Service) saveCache() error {
+func (s *Service) saveCache(ctx context.Context) error {
 	if s.cachePath == "" {
 		return nil
 	}
-	cacheBinary, err := s.encodeCache()
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.cacheMutex.Lock()
 	defer s.cacheMutex.Unlock()
-	if bytes.Equal(s.lastSavedCache, cacheBinary) {
-		return nil
-	}
-	return s.writeCache(cacheBinary)
-}
-
-func (s *Service) writeCache(cacheBinary []byte) error {
-	basePath := filemanager.BasePath(s.ctx, s.cachePath)
-	err := filemanager.MkdirAll(s.ctx, filepath.Dir(basePath), 0o777)
+	cacheBinary, err := s.encodeCache()
 	if err != nil {
 		return err
 	}
-	err = filemanager.WriteFile(s.ctx, basePath, cacheBinary, 0o644)
+	if bytes.Equal(s.lastSavedCache, cacheBinary) {
+		return nil
+	}
+	return s.writeCache(ctx, cacheBinary)
+}
+
+func (s *Service) writeCache(ctx context.Context, cacheBinary []byte) error {
+	err := s.cacheStore.Write(ctx, cacheBinary)
 	if err != nil {
 		return err
 	}
@@ -89,7 +85,7 @@ func (s *Service) decodeCache(cacheBinary []byte) error {
 	if len(cacheBinary) == 0 {
 		return nil
 	}
-	cache, err := json.UnmarshalExtended[*Cache](cacheBinary)
+	cache, err := parseCache(cacheBinary)
 	if err != nil {
 		return err
 	}
@@ -101,6 +97,7 @@ func (s *Service) decodeCache(cacheBinary []byte) error {
 		if !loaded {
 			continue
 		}
+		trafficManager.userAccess.Lock()
 		trafficManager.globalUplink.Store(entry.Value.GlobalUplink)
 		trafficManager.globalDownlink.Store(entry.Value.GlobalDownlink)
 		trafficManager.globalUplinkPackets.Store(entry.Value.GlobalUplinkPackets)
@@ -113,19 +110,60 @@ func (s *Service) decodeCache(cacheBinary []byte) error {
 		trafficManager.userDownlinkPackets = typedAtomicInt64Map(entry.Value.UserDownlinkPackets)
 		trafficManager.userTCPSessions = typedAtomicInt64Map(entry.Value.UserTCPSessions)
 		trafficManager.userUDPSessions = typedAtomicInt64Map(entry.Value.UserUDPSessions)
+		trafficManager.userAccess.Unlock()
 		userManager, loaded := s.users[entry.Key]
 		if !loaded {
 			continue
 		}
+		userManager.access.Lock()
 		userManager.usersMap = typedMap(entry.Value.Users)
-		_ = userManager.postUpdate(false)
+		err = userManager.postUpdate(false)
+		userManager.access.Unlock()
+		if err != nil {
+			return errors.New("SSM_CACHE_USERS_REJECTED")
+		}
 	}
 	return nil
+}
+
+// ValidateCache shares the service's bounded schema interpretation with its
+// private backup/restore adapter. Errors never include credential bytes.
+func ValidateCache(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	_, err := parseCache(data)
+	return err
+}
+
+func parseCache(data []byte) (*Cache, error) {
+	if len(data) > MaxCacheBytes {
+		return nil, errors.New("SSM_CACHE_EXCESSIVE")
+	}
+	cache, err := json.UnmarshalExtended[*Cache](data)
+	if err != nil || cache == nil {
+		return nil, errors.New("SSM_CACHE_INVALID")
+	}
+	if cache.Endpoints != nil {
+		for _, entry := range cache.Endpoints.Entries() {
+			if entry.Value == nil {
+				return nil, errors.New("SSM_CACHE_INVALID")
+			}
+		}
+	}
+	return cache, nil
 }
 
 func (s *Service) encodeCache() ([]byte, error) {
 	endpoints := new(badjson.TypedMap[string, *EndpointCache])
 	for tag, traffic := range s.traffics {
+		// User updates acquire user access before traffic access; preserve the
+		// same order for an internally consistent, race-free cache snapshot.
+		userManager := s.users[tag]
+		if userManager != nil {
+			userManager.access.Lock()
+		}
+		traffic.userAccess.Lock()
 		var (
 			userUplink          = new(badjson.TypedMap[string, int64])
 			userDownlink        = new(badjson.TypedMap[string, int64])
@@ -165,7 +203,6 @@ func (s *Service) encodeCache() ([]byte, error) {
 				userUDPSessions.Put(user, udpSessions.Load())
 			}
 		}
-		userManager := s.users[tag]
 		if userManager != nil && len(userManager.usersMap) > 0 {
 			userMap = new(badjson.TypedMap[string, string])
 			for username, password := range userManager.usersMap {
@@ -189,6 +226,10 @@ func (s *Service) encodeCache() ([]byte, error) {
 			UserUDPSessions:       sortTypedMap(userUDPSessions),
 			Users:                 sortTypedMap(userMap),
 		})
+		traffic.userAccess.Unlock()
+		if userManager != nil {
+			userManager.access.Unlock()
+		}
 	}
 	var buffer bytes.Buffer
 	encoder := json.NewEncoder(&buffer)
@@ -198,6 +239,9 @@ func (s *Service) encodeCache() ([]byte, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if buffer.Len() > MaxCacheBytes {
+		return nil, errors.New("SSM_CACHE_EXCESSIVE")
 	}
 	return buffer.Bytes(), nil
 }
