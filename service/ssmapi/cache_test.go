@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -12,7 +14,9 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing-box/option"
 )
 
 type cacheManagedFixture struct {
@@ -277,5 +281,64 @@ func TestCacheLoopDrainsBeforeFinalFlush(t *testing.T) {
 	}
 	if store.writes != 2 {
 		t.Fatal("final write did not follow drain exactly once")
+	}
+}
+
+// Exercise the real HTTP/listener ownership used by a started SSM service.
+// Closing the HTTP server already closes its accepted listener; the listener
+// owner must still run its cleanup without turning that expected close into
+// a failed hot removal of the service.
+func TestCacheStartedHTTPListenerCloseAndPortReuse(t *testing.T) {
+	s := cacheServiceFixture()
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.listener = listener.New(listener.Options{Context: s.ctx, Logger: s.logger, Listen: option.ListenOptions{}})
+	tcp, err := s.listener.ListenTCP()
+	if err != nil {
+		t.Fatal("open loopback listener", err)
+	}
+	address := tcp.Addr().String()
+	s.httpServer = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}
+	served := make(chan error, 1)
+	go func() { served <- s.httpServer.Serve(tcp) }()
+	t.Cleanup(func() { _ = s.Close() })
+	client := &http.Client{Timeout: time.Second}
+	defer client.CloseIdleConnections()
+	response, err := client.Get("http://" + address)
+	if err != nil {
+		t.Fatal("HTTP readiness barrier", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatal("HTTP readiness rejected")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal("intentional service closure rejected", err)
+	}
+	select {
+	case err = <-served:
+		if !errors.Is(err, http.ErrServerClosed) {
+			t.Fatal("unexpected HTTP termination", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP service leaked")
+	}
+	reused, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal("closed listener still owns port", err)
+	}
+	defer reused.Close()
+	results := make(chan error, 8)
+	for range 8 {
+		go func() { results <- s.Close() }()
+	}
+	for range 8 {
+		select {
+		case err = <-results:
+			if err != nil {
+				t.Fatal("repeated close changed result", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("repeated close blocked")
+		}
 	}
 }

@@ -3,6 +3,7 @@ package ssmapi
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -181,7 +182,15 @@ func (s *Service) Close() error {
 		}
 		ready, done := s.cacheReady, s.loopDone
 		s.lifecycle.Unlock()
-		s.closeErr = common.Close(common.PtrOrNil(s.httpServer), common.PtrOrNil(s.listener), s.tlsConfig)
+		// http.Server.Close closes the same TCP listener it serves. Retain the
+		// listener owner's cleanup, but an already-closed socket is expected at
+		// this seam and must not turn a normal hot removal into a failed reload.
+		s.closeErr = common.Close(common.PtrOrNil(s.httpServer))
+		listenerErr := common.Close(common.PtrOrNil(s.listener))
+		if errors.Is(listenerErr, net.ErrClosed) {
+			listenerErr = nil
+		}
+		s.closeErr = errors.Join(s.closeErr, listenerErr, common.Close(s.tlsConfig))
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if done != nil {
