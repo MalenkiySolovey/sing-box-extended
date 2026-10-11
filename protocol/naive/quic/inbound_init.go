@@ -33,11 +33,6 @@ func init() {
 			tlsConfig.SetNextProtos(append(append([]string{}, tlsConfig.NextProtos()...), http3.NextProtoH3))
 		}
 
-		udpConn, err := listener.ListenUDP()
-		if err != nil {
-			return nil, err
-		}
-
 		var congestionControl func(conn *quic.Conn) congestion.CongestionControl
 		timeFunc := ntp.TimeFuncFromContext(ctx)
 		if timeFunc == nil {
@@ -68,6 +63,11 @@ func init() {
 			return nil, E.New("unknown quic congestion control: ", options.QUICCongestionControl)
 		}
 
+		udpConn, err := listener.ListenUDP()
+		if err != nil {
+			return nil, err
+		}
+
 		quicListener, err := qtls.ListenEarly(udpConn, tlsConfig, &quic.Config{
 			MaxIncomingStreams: 1 << 60,
 			Allow0RTT:          true,
@@ -86,15 +86,25 @@ func init() {
 			},
 		}
 
-		go func() {
-			sErr := h3Server.ServeListener(quicListener)
-			udpConn.Close()
+		// Reuse the pinned transport owner. Naive authentication is per HTTP
+		// request, so these handles intentionally have no principal binding or
+		// selective-parent capability. The owner only drains this inbound.
+		parents := qtls.NewParentOwner[naiveParent](ctx)
+		err = parents.Start(quicListener, func(_ context.Context, conn *quic.Conn) {
+			sErr := h3Server.ServeQUICConn(conn)
 			if sErr != nil && !E.IsClosedOrCanceled(sErr) {
 				logger.Error("http3 server closed: ", sErr)
 			}
-		}()
+		}, func(err error) {
+			if !E.IsClosedOrCanceled(err) {
+				logger.Error("http3 listener closed: ", err)
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
 
-		return quicListener, nil
+		return &http3Lifecycle{parents: parents, server: h3Server}, nil
 	}
 	naive.WrapError = qtls.WrapError
 }
