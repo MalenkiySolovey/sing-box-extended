@@ -83,15 +83,15 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		err       error
 		conn      net.Conn
 	)
-	if s.earlyDataHeaderName == "" {
-		if strings.HasPrefix(request.URL.RequestURI(), s.path) {
-			earlyDataStr := request.URL.RequestURI()[len(s.path):]
+	if s.maxEarlyData > 0 && s.earlyDataHeaderName == "" {
+		if strings.HasPrefix(request.URL.Path, s.path) {
+			earlyDataStr := request.URL.Path[len(s.path):]
 			earlyData, err = base64.RawURLEncoding.DecodeString(earlyDataStr)
 		} else {
 			s.invalidRequest(writer, request, http.StatusNotFound, E.New("bad path: ", request.URL.Path))
 			return
 		}
-	} else {
+	} else if s.maxEarlyData > 0 {
 		if request.URL.Path != s.path {
 			s.invalidRequest(writer, request, http.StatusNotFound, E.New("bad path: ", request.URL.Path))
 			return
@@ -100,6 +100,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if earlyDataStr != "" {
 			earlyData, err = base64.RawURLEncoding.DecodeString(earlyDataStr)
 		}
+	}
+	if err == nil && uint64(len(earlyData)) > uint64(s.maxEarlyData) {
+		err = E.New("early data exceeds configured maximum")
 	}
 	if err != nil {
 		s.invalidRequest(writer, request, http.StatusBadRequest, E.Cause(err, "decode early data"))
