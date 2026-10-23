@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 
@@ -106,7 +107,14 @@ func (s *Service) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if err != nil {
 		return err
 	}
-	scope.Add(s.listener.Close)
+	scope.Add(func() error {
+		// http.Server.Close owns the served TCP listener as well.
+		err := s.listener.Close()
+		if errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		return err
+	})
 	if s.tlsConfig != nil {
 		tcpListener = aTLS.NewListener(tcpListener, s.tlsConfig)
 	}
