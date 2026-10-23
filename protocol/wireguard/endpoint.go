@@ -195,6 +195,24 @@ func (w *Endpoint) InterfaceUpdated(ctx context.Context) {
 	go w.updateBind(ctx)
 }
 
+func (w *Endpoint) IpcGet() (string, error) {
+	w.bindAccess.Lock()
+	defer w.bindAccess.Unlock()
+	if !w.started.Load() || w.endpoint == nil {
+		return "", E.New("wireguard endpoint unavailable")
+	}
+	return w.endpoint.IpcGet()
+}
+
+func (w *Endpoint) IpcSet(config string) error {
+	w.bindAccess.Lock()
+	defer w.bindAccess.Unlock()
+	if !w.started.Load() || w.endpoint == nil {
+		return E.New("wireguard endpoint unavailable")
+	}
+	return w.endpoint.IpcSet(config)
+}
+
 func (w *Endpoint) updateBind(ctx context.Context) {
 	w.bindAccess.Lock()
 	defer w.bindAccess.Unlock()
