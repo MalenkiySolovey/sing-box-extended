@@ -22,5 +22,6 @@ type ServiceManager interface {
 	Lifecycle
 	Services() []Service
 	Get(tag string) (Service, bool)
+	Remove(tag string) error
 	Create(ctx context.Context, logger log.ContextLogger, tag string, serviceType string, options any) error
 }
