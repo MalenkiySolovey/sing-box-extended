@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-tun"
@@ -27,6 +28,10 @@ import (
 )
 
 type Endpoint struct {
+	access         sync.RWMutex
+	closed         bool
+	closeOnce      sync.Once
+	closeErr       error
 	options        EndpointOptions
 	peers          []peerConfig
 	ipcConf        string
@@ -131,6 +136,14 @@ func (e *Endpoint) Start(postStart bool) error {
 		return peer.destination.IsDomain()
 	})
 	if postStart != hasDomainPeer {
+		return nil
+	}
+	e.access.Lock()
+	defer e.access.Unlock()
+	if e.closed {
+		return E.New("wireguard endpoint closed")
+	}
+	if e.device != nil {
 		return nil
 	}
 	var bind conn.Bind
@@ -287,7 +300,8 @@ func (e *Endpoint) Start(postStart bool) error {
 	err = wgDevice.IpcSet(ipcConf.String())
 	if err != nil {
 		wgDevice.Close()
-		return E.Cause(err, "setup wireguard: \n", ipcConf.String())
+		// The native IPC error may quote configuration values, including keys.
+		return E.New("setup wireguard failed")
 	}
 	e.device = wgDevice
 	e.pause = service.FromContext[pause.Manager](e.options.Context)
@@ -313,24 +327,53 @@ func (e *Endpoint) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 }
 
 func (e *Endpoint) Close() error {
-	if e.pauseCallback != nil {
-		e.pause.UnregisterCallback(e.pauseCallback)
-		e.pauseCallback = nil
+	e.closeOnce.Do(func() {
+		e.access.Lock()
+		e.closed = true
+		callback, pool, wgDevice := e.pauseCallback, e.egressPool, e.device
+		e.pauseCallback, e.egressPool, e.device, e.allowedIPs = nil, nil, nil, nil
+		e.access.Unlock()
+		// Never hold access while unregistering a callback that may be waiting
+		// for that lock. No IPC/start can acquire the detached device now.
+		if callback != nil {
+			e.pause.UnregisterCallback(callback)
+		}
+		if pool != nil {
+			pool.Close()
+		}
+		if wgDevice != nil {
+			wgDevice.Down()
+			wgDevice.Close()
+		} else if e.tunDevice != nil {
+			e.closeErr = e.tunDevice.Close()
+		}
+	})
+	return e.closeErr
+}
+
+// IPC is a privileged embedding seam. Callers must redact keys before exposing
+// observations and retain their runtime generation throughout the operation.
+func (e *Endpoint) IpcGet() (string, error) {
+	e.access.RLock()
+	defer e.access.RUnlock()
+	if e.closed || e.device == nil {
+		return "", E.New("wireguard endpoint unavailable")
 	}
-	if e.egressPool != nil {
-		e.egressPool.Close()
-		e.egressPool = nil
+	return e.device.IpcGet()
+}
+
+func (e *Endpoint) IpcSet(config string) error {
+	e.access.RLock()
+	defer e.access.RUnlock()
+	if e.closed || e.device == nil {
+		return E.New("wireguard endpoint unavailable")
 	}
-	if e.device != nil {
-		e.device.Down()
-		e.device.Close()
-		e.device = nil
-		return nil
-	}
-	return e.tunDevice.Close()
+	return e.device.IpcSet(config)
 }
 
 func (e *Endpoint) Lookup(address netip.Addr) *device.Peer {
+	e.access.RLock()
+	defer e.access.RUnlock()
 	if e.allowedIPs == nil {
 		return nil
 	}
@@ -338,6 +381,8 @@ func (e *Endpoint) Lookup(address netip.Addr) *device.Peer {
 }
 
 func (e *Endpoint) BindUpdate() error {
+	e.access.RLock()
+	defer e.access.RUnlock()
 	if e.device == nil {
 		return nil
 	}
@@ -345,6 +390,11 @@ func (e *Endpoint) BindUpdate() error {
 }
 
 func (e *Endpoint) onPauseUpdated(event int) {
+	e.access.RLock()
+	defer e.access.RUnlock()
+	if e.closed || e.device == nil {
+		return
+	}
 	switch event {
 	case pause.EventNetworkPause:
 		e.device.Down()
