@@ -201,7 +201,10 @@ func (f *Fallback) dial(sessionID string, user string, auth ssh.AuthMethod) erro
 		f.mtx.Unlock()
 		return err
 	}
+	upstream := conn
+	stopCancellation := context.AfterFunc(f.ctx, func() { _ = upstream.Close() })
 	conn = onclose.NewConn(conn, func() {
+		stopCancellation()
 		f.mtx.Lock()
 		delete(f.pending, sessionID)
 		f.mtx.Unlock()
@@ -318,5 +321,3 @@ func proxyChannelRequests(requests <-chan *ssh.Request, target ssh.Channel) {
 		}
 	}
 }
-
-

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"net"
 	"os"
+	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -32,15 +33,28 @@ type Inbound struct {
 	listener     *listener.Listener
 	serverConfig *ssh.ServerConfig
 	service      Service
+	inactive     bool
+	cancel       context.CancelFunc
+	connAccess   sync.Mutex
+	connections  map[net.Conn]struct{}
+	connDone     sync.WaitGroup
+	closed       bool
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.SSHInboundOptions) (adapter.Inbound, error) {
-	if len(options.Users) == 0 && options.Fallback == nil {
-		return nil, E.New("missing users")
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	constructed := false
+	defer func() {
+		if !constructed {
+			cancel()
+		}
+	}()
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeSSH, tag),
-		logger:  logger,
+		Adapter:     inbound.NewAdapter(C.TypeSSH, tag),
+		logger:      logger,
+		inactive:    len(options.Users) == 0 && options.Fallback == nil,
+		cancel:      cancel,
+		connections: make(map[net.Conn]struct{}),
 	}
 	defaultService := newService(router, logger, options.Users)
 	if options.Fallback != nil {
@@ -103,6 +117,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		Listen:            options.ListenOptions,
 		ConnectionHandler: inbound,
 	})
+	constructed = true
 	return inbound, nil
 }
 
@@ -111,6 +126,11 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		return nil
 	}
 	scope.Add(h.service.Close)
+	scope.Add(h.closeConnections)
+	if h.inactive {
+		h.logger.Info("ssh listener is inactive: no users")
+		return nil
+	}
 	err := h.listener.Start()
 	if err != nil {
 		return err
@@ -124,6 +144,28 @@ func (h *Inbound) UpdateUsers(users []option.SSHUser) {
 }
 
 func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	if onClose != nil {
+		onClose = N.OnceClose(onClose)
+	}
+	h.connAccess.Lock()
+	if h.closed {
+		h.connAccess.Unlock()
+		N.CloseOnHandshakeFailure(conn, onClose, net.ErrClosed)
+		return
+	}
+	h.connections[conn] = struct{}{}
+	h.connDone.Add(1)
+	h.connAccess.Unlock()
+	defer func() {
+		_ = conn.Close()
+		h.connAccess.Lock()
+		delete(h.connections, conn)
+		h.connAccess.Unlock()
+		h.connDone.Done()
+		if onClose != nil {
+			onClose(nil)
+		}
+	}()
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
 	serverConn, channels, requests, err := ssh.NewServerConn(conn, h.serverConfig)
@@ -136,6 +178,7 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 		}
 		return
 	}
+	defer serverConn.Close()
 	var user string
 	if serverConn.Permissions != nil {
 		user = serverConn.Permissions.Extensions["user"]
@@ -146,9 +189,25 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 	if user != "" {
 		metadata.User = user
 	}
-	go func() {
-		serverConn.Wait()
-		conn.Close()
-	}()
 	h.service.Handle(ctx, serverConn, channels, requests, metadata, user)
+}
+
+func (h *Inbound) closeConnections() error {
+	h.connAccess.Lock()
+	h.closed = true
+	connections := make([]net.Conn, 0, len(h.connections))
+	for conn := range h.connections {
+		connections = append(connections, conn)
+	}
+	h.connAccess.Unlock()
+	// Cancel pending fallback dials as well as retiring authenticated sessions.
+	h.cancel()
+	var result error
+	for _, conn := range connections {
+		if err := conn.Close(); err != nil && !E.IsClosedOrCanceled(err) {
+			result = E.Errors(result, err)
+		}
+	}
+	h.connDone.Wait()
+	return result
 }
