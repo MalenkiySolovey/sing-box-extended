@@ -1,0 +1,58 @@
+{
+  "schema": "solovey.core-patch-queue/v1",
+  "sourceAuthority": "https://github.com/shtorm-7/sing-box-extended",
+  "copyRepository": "https://github.com/MalenkiySolovey/sing-box-extended",
+  "copyRole": "mirror/cache/development",
+  "base": "d9442d14b19ddd02605bf3ee893a171947038e19",
+  "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
+  "pristineRef": "refs/heads/mirror/extended",
+  "patchBranch": "solovey/extended-patches",
+  "codeTree": "11e8da4309020a913e4ba69412631e6cf1465aa2",
+  "patchIds": [
+    "EXTENDED-0001",
+    "EXTENDED-0002",
+    "EXTENDED-0003",
+    "EXTENDED-0004",
+    "EXTENDED-0005",
+    "EXTENDED-0006",
+    "EXTENDED-0007",
+    "EXTENDED-0008",
+    "EXTENDED-0009",
+    "EXTENDED-0010",
+    "EXTENDED-0011",
+    "EXTENDED-0012",
+    "EXTENDED-0013",
+    "EXTENDED-0014"
+  ],
+  "metadataPaths": [
+    ".github/workflows/solovey-patch-queue.yml",
+    "scripts/verify-solovey-queue.py",
+    "docs/solovey/queue.json",
+    "docs/solovey/EXTENDED_COPY_BASELINE.md",
+    "docs/solovey/UPSTREAM_REBASE_PROCEDURE.md",
+    "docs/solovey/EXTENDED_PATCH_SERIES.md",
+    "docs/solovey/PATCH_SERIES_RANGE_DIFF.md",
+    "docs/solovey/CURRENT_MIXED_FORK_DELTA_AUDIT.md"
+  ],
+  "regressionPackages": [
+    "./service/ssmapi",
+    "./transport/v2raywebsocket",
+    "./transport/wireguard",
+    "./protocol/wireguard",
+    "./protocol/naive/quic",
+    "./adapter/...",
+    "./service/api",
+    "./protocol/mieru",
+    "./protocol/trusttunnel",
+    "./protocol/ssh",
+    "./protocol/mtproxy"
+  ],
+  "buildTags": "with_quic,with_grpc,with_utls,with_gvisor",
+  "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",
+  "localPatchesClassification": "ENGINE_PATCH_REQUIRED",
+  "upstreamContributionStatus": "CANDIDATES_PREPARED_NOT_SUBMITTED",
+  "companion": {
+    "module": "github.com/MalenkiySolovey/sing-quic",
+    "version": "v0.7.2-0.20261025183737-9034c2c10c63"
+  }
+}
