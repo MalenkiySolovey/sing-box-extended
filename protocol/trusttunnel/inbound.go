@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
+	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -88,7 +89,7 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
-	scope.Add(h.listener.Close)
+	scope.Add(func() error { return listenerCloseError(h.listener.Close()) })
 	var err error
 	if common.Contains(h.network, N.NetworkTCP) {
 		h.httpTLSConfig, err = tls.NewServer(h.ctx, h.logger, common.PtrValueOrDefault(h.options.TLS))
@@ -171,6 +172,18 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		}()
 	}
 	return nil
+}
+
+func listenerCloseError(err error) error {
+	// http.Server.Close also closes TCP. Inspect the listener's per-socket
+	// errors so an expected duplicate close cannot hide a different UDP error.
+	var retained []error
+	for _, cause := range E.Expand(err) {
+		if !errors.Is(cause, net.ErrClosed) {
+			retained = append(retained, cause)
+		}
+	}
+	return E.Errors(retained...)
 }
 
 func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
