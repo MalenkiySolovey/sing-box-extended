@@ -26,6 +26,7 @@ import (
 	mierumodel "github.com/enfein/mieru/v3/apis/model"
 	mieruserver "github.com/enfein/mieru/v3/apis/server"
 	mierutp "github.com/enfein/mieru/v3/apis/trafficpattern"
+	"github.com/enfein/mieru/v3/pkg/appctl/appctlcommon"
 	mierupb "github.com/enfein/mieru/v3/pkg/appctl/appctlpb"
 	"google.golang.org/protobuf/proto"
 )
@@ -55,9 +56,12 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	factory := &mieruListenerFactory{ctx: ctx, logger: logger, options: options.ListenOptions}
 	config.StreamListenerFactory, config.PacketListenerFactory = factory, factory
 
-	s := mieruserver.NewServer()
-	if err := s.Store(config); err != nil {
-		return nil, fmt.Errorf("failed to store mieru server config: %w", err)
+	var s mieruserver.Server
+	if len(userNames) > 0 {
+		s = mieruserver.NewServer()
+		if err := s.Store(config); err != nil {
+			return nil, fmt.Errorf("failed to store mieru server config: %w", err)
+		}
 	}
 
 	inboundInstance := &Inbound{
@@ -81,6 +85,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 
 func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
+		return nil
+	}
+	if h.server == nil {
+		// Revoking the final user must retire the old serving instance. An
+		// empty desired user list is inactive: no listener, anonymous access,
+		// generated substitute credential, or fallback server is created.
+		h.logger.Info("mieru listener is inactive: no users")
 		return nil
 	}
 
@@ -297,6 +308,12 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 			Protocol:  transportProtocol,
 		})
 	}
+	// Keep the same port validation for inactive and serving configurations.
+	// The Mieru API cannot store an empty user list, so it is only constructed
+	// for serving instances; all non-user checks still run here.
+	if _, err := appctlcommon.FlatPortBindings(portBindings); err != nil {
+		return nil, nil, fmt.Errorf("invalid mieru port bindings: %w", err)
+	}
 
 	var users []*mierupb.User
 	var userNames []string
@@ -332,9 +349,6 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 func validateMieruInboundOptions(options option.MieruInboundOptions) error {
 	if options.Transport != "TCP" && options.Transport != "UDP" {
 		return E.New("transport must be TCP or UDP")
-	}
-	if len(options.Users) == 0 {
-		return E.New("users is empty")
 	}
 	for _, user := range options.Users {
 		if user.Name == "" {
