@@ -163,3 +163,60 @@ func TestMieruListenerFailureRejectsReadyAndCleansOtherPorts(t *testing.T) {
 		})
 	}
 }
+
+func TestMieruNoUsersStaysInactiveAndKeepsPortsReusable(t *testing.T) {
+	for _, network := range []string{"tcp", "udp"} {
+		for _, users := range []string{"", `,"users":[]`} {
+			t.Run(network+users, func(t *testing.T) {
+				primary, first := reserveMieruPort(t, network)
+				extra, second := reserveMieruPort(t, network)
+				var options option.MieruInboundOptions
+				raw := fmt.Sprintf(`{"listen":"127.0.0.1","listen_port":%d,"listen_ports":["%d-%d"],"transport":%q%s}`, primary, extra, extra, strings.ToUpper(network), users)
+				if err := sbjson.UnmarshalContext(t.Context(), []byte(raw), &options); err != nil {
+					t.Fatal(err)
+				}
+				logger := log.NewNOPFactory().Logger()
+				candidate, err := NewInbound(t.Context(), nil, logger, "inactive", options)
+				if err != nil {
+					t.Fatal("empty desired user list was rejected", err)
+				}
+				scope := adapter.NewScope(t.Context(), logger)
+				t.Cleanup(func() { _ = scope.Close() })
+				// The externally occupied ports cannot prevent an inactive
+				// inbound from starting, and remain reusable while it exists.
+				if err := candidate.Start(adapter.StartStateStart, scope); err != nil {
+					t.Fatal("inactive inbound attempted to serve", err)
+				}
+				_ = first.Close()
+				_ = second.Close()
+				assertMieruPortReleased(t, network, primary)
+				assertMieruPortReleased(t, network, extra)
+				if err := scope.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := scope.Close(); err != nil {
+					t.Fatal("inactive cleanup was not repeatable", err)
+				}
+			})
+		}
+	}
+}
+
+func TestMieruNoUsersRetainsStrictOptionValidation(t *testing.T) {
+	for name, raw := range map[string]string{
+		"transport": `{"listen_port":12345,"transport":"invalid","users":[]}`,
+		"no-port":   `{"transport":"TCP","users":[]}`,
+		"range":     `{"listen_ports":["invalid"],"transport":"UDP","users":[]}`,
+		"pattern":   `{"listen_port":12345,"transport":"TCP","traffic_pattern":"invalid","users":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var options option.MieruInboundOptions
+			if err := sbjson.UnmarshalContext(t.Context(), []byte(raw), &options); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewInbound(t.Context(), nil, log.NewNOPFactory().Logger(), "invalid", options); err == nil {
+				t.Fatal("inactive inbound silently accepted invalid serving options")
+			}
+		})
+	}
+}
