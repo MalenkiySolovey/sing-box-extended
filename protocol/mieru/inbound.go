@@ -41,6 +41,7 @@ type Inbound struct {
 	logger    log.ContextLogger
 	listener  *listener.Listener
 	server    mieruserver.Server
+	listeners *mieruListenerFactory
 	userNames []string
 
 	mu sync.Mutex
@@ -51,6 +52,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err != nil {
 		return nil, fmt.Errorf("failed to build mieru server config: %w", err)
 	}
+	factory := &mieruListenerFactory{ctx: ctx, logger: logger, options: options.ListenOptions}
+	config.StreamListenerFactory, config.PacketListenerFactory = factory, factory
 
 	s := mieruserver.NewServer()
 	if err := s.Store(config); err != nil {
@@ -63,6 +66,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		router:    uot.NewRouter(router, logger),
 		logger:    logger,
 		server:    s,
+		listeners: factory,
 		userNames: userNames,
 	}
 	inboundInstance.listener = listener.New(listener.Options{
@@ -83,17 +87,21 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if err := h.server.Start(); err != nil {
-		return fmt.Errorf("failed to start mieru server: %w", err)
-	}
+	h.listeners.scope = scope
 	scope.Add(func() error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if h.server.IsRunning() {
-			return h.server.Stop()
-		}
-		return nil
+		return h.server.Stop()
 	})
+	if err := h.server.Start(); err != nil {
+		return fmt.Errorf("failed to start mieru server: %w", err)
+	}
+	// Mieru v3.33.0 waits for listener factories but does not propagate their
+	// failures from Start. Reject the candidate before reporting readiness;
+	// its Scope also closes any ports that did start successfully.
+	if err := h.listeners.failure(); err != nil {
+		return fmt.Errorf("failed to start mieru listener: %w", err)
+	}
 
 	h.logger.Notice("mieru server is started")
 	go h.acceptLoop()
