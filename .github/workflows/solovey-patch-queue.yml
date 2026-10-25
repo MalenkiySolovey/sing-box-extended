@@ -1,0 +1,48 @@
+name: Solovey patch queue
+on:
+  push:
+    branches: ['solovey/**']
+  pull_request:
+    branches: ['solovey/**']
+permissions:
+  contents: read
+jobs:
+  queue:
+    name: Queue regression (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-version: '1.26.10'
+      - name: Verify exact upstream, pristine ref, ancestry, linear queue and source equivalence
+        run: python scripts/verify-solovey-queue.py
+      - name: Run owned engine regressions with race detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp go.mod .solovey-test.mod
+          cp go.sum .solovey-test.sum
+          companion=$(python scripts/verify-solovey-queue.py companion)
+          if [[ -n "$companion" ]]; then
+            go mod edit -modfile=.solovey-test.mod "-replace=github.com/sagernet/sing-quic=$companion"
+            go mod download -modfile=.solovey-test.mod "$companion"
+          fi
+          packages=$(python scripts/verify-solovey-queue.py packages)
+          tags=$(python scripts/verify-solovey-queue.py tags)
+          go test -mod=readonly -modfile=.solovey-test.mod -race -count=3 -timeout=5m -tags "$tags" $packages
+          git diff --exit-code
+      - name: Discard test-only module locks
+        if: always()
+        shell: bash
+        run: rm -f .solovey-test.mod .solovey-test.sum
