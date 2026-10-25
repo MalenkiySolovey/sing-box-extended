@@ -3,6 +3,8 @@ package mtproxy
 import (
 	"context"
 	"net"
+	"strings"
+	"sync"
 
 	"github.com/dolonet/mtg-multi/antireplay"
 	"github.com/dolonet/mtg-multi/events"
@@ -29,6 +31,8 @@ type Inbound struct {
 	logger   logger.ContextLogger
 	listener *listener.Listener
 	proxy    *mtglib.Proxy
+	options  mtglib.ProxyOpts
+	access   sync.Mutex
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MTProxyInboundOptions) (adapter.Inbound, error) {
@@ -47,9 +51,8 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	secrets := make(map[string]mtglib.Secret, len(options.Users))
 	for _, user := range options.Users {
 		secret := mtglib.Secret{}
-		err := secret.Set(user.Secret)
-		if err != nil {
-			return nil, err
+		if err := secret.Set(user.Secret); err != nil || !secret.Valid() {
+			return nil, E.New("invalid mtproxy user secret")
 		}
 		secrets[user.Name] = secret
 	}
@@ -80,11 +83,20 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		ThrottleMaxConnections: options.ThrottleMaxConnections,
 		ThrottleCheckInterval:  options.GetThrottleCheckInterval(),
 	}
-	proxy, err := mtglib.NewProxy(opts)
-	if err != nil {
-		return nil, E.New("cannot create a proxy: ", err)
+	// NewProxy starts MTG background work. Validate its user-controlled
+	// prerequisites here, but defer that work until it has a serving Scope.
+	switch strings.ToLower(opts.PreferIP) {
+	case "prefer-ipv4", "prefer-ipv6", "only-ipv4", "only-ipv6":
+	default:
+		return nil, E.New("invalid mtproxy IP preference")
 	}
-	inbound.proxy = proxy
+	if opts.DoppelGangerEach <= 0 {
+		return nil, E.New("invalid mtproxy doppelganger interval")
+	}
+	if opts.ThrottleCheckInterval <= 0 {
+		return nil, E.New("invalid mtproxy throttle interval")
+	}
+	inbound.options = opts
 	return inbound, nil
 }
 
@@ -92,16 +104,35 @@ func (n *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
+	n.access.Lock()
+	defer n.access.Unlock()
+	if len(n.options.Secrets) == 0 {
+		n.logger.Info("mtproxy listener is inactive: no users")
+		return nil
+	}
+	proxy, err := mtglib.NewProxy(n.options)
+	if err != nil {
+		return E.New("cannot create a proxy: ", err)
+	}
+	n.proxy = proxy
 	scope.Add(func() error {
-		n.proxy.Shutdown()
+		proxy.Shutdown()
 		return nil
 	})
 	listener, err := n.listener.ListenTCP()
 	if err != nil {
 		return err
 	}
-	scope.Add(n.listener.Close)
-	go n.proxy.Serve(listener)
+	served := make(chan struct{})
+	scope.Add(func() error {
+		err := n.listener.Close()
+		<-served
+		return err
+	})
+	go func() {
+		defer close(served)
+		_ = proxy.Serve(listener)
+	}()
 	return nil
 }
 
@@ -109,13 +140,17 @@ func (h *Inbound) UpdateUsers(users []option.MTProxyUser) {
 	secrets := make(map[string]mtglib.Secret, len(users))
 	for _, user := range users {
 		secret := mtglib.Secret{}
-		err := secret.Set(user.Secret)
-		if err != nil {
+		if err := secret.Set(user.Secret); err != nil || !secret.Valid() {
 			return
 		}
 		secrets[user.Name] = secret
 	}
-	h.proxy.UpdateUsers(secrets)
+	h.access.Lock()
+	defer h.access.Unlock()
+	h.options.Secrets = secrets
+	if h.proxy != nil {
+		h.proxy.UpdateUsers(secrets)
+	}
 }
 
 func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
