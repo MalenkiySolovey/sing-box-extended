@@ -70,7 +70,7 @@ func (o *MTProxyInboundOptions) GetDoppelGangerPerRaid() uint {
 }
 
 func (o *MTProxyInboundOptions) GetDoppelGangerEach() time.Duration {
-	if o.HandshakeTimeout == 0 {
+	if o.DoppelGangerEach == 0 {
 		return 6 * time.Hour
 	}
 	return o.DoppelGangerEach.Build()

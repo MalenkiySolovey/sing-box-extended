@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/json/badoption"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -194,5 +195,20 @@ func TestMTProxyServingScopeRetiresPendingPeerAndReleasesPort(t *testing.T) {
 			_ = probe.Close()
 			closeMTProxyScope(t, scope)
 		})
+	}
+}
+
+func TestMTProxyDoppelGangerIntervalIndependentOfHandshake(t *testing.T) {
+	for _, handshake := range []time.Duration{0, time.Second} {
+		for _, interval := range []time.Duration{0, time.Minute} {
+			options := option.MTProxyInboundOptions{HandshakeTimeout: badoption.Duration(handshake), DoppelGangerEach: badoption.Duration(interval)}
+			expected := interval
+			if expected == 0 {
+				expected = 6 * time.Hour
+			}
+			if options.GetDoppelGangerEach() != expected {
+				t.Fatal("MTProxy ignored its configured doppelganger interval")
+			}
+		}
 	}
 }
