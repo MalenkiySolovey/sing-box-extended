@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/dolonet/mtg-multi/essentials"
 )
@@ -29,11 +30,14 @@ func (a *NetworkAdapter) DialContext(ctx context.Context, network, address strin
 	return essentials.WrapNetConn(conn), nil
 }
 
-func (a *NetworkAdapter) MakeHTTPClient(func(ctx context.Context, network, address string) (essentials.Conn, error)) *http.Client {
+func (a *NetworkAdapter) MakeHTTPClient(dial func(ctx context.Context, network, address string) (essentials.Conn, error)) *http.Client {
+	if dial == nil {
+		dial = a.DialContext
+	}
 	return &http.Client{
-		Timeout: 10,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return a.DialContext(ctx, network, addr)
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dial(ctx, network, addr)
 		}},
 	}
 }

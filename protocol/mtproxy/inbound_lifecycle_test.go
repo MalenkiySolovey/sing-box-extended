@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/dolonet/mtg-multi/essentials"
 	"github.com/dolonet/mtg-multi/mtglib"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
@@ -210,5 +214,56 @@ func TestMTProxyDoppelGangerIntervalIndependentOfHandshake(t *testing.T) {
 				t.Fatal("MTProxy ignored its configured doppelganger interval")
 			}
 		}
+	}
+}
+
+func TestMTProxyHTTPHelperCompletesAndHonorsDialOverride(t *testing.T) {
+	for _, override := range []bool{false, true} {
+		t.Run(fmt.Sprintf("override=%t", override), func(t *testing.T) {
+			closed := make(chan struct{}, 1)
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				time.Sleep(10 * time.Millisecond)
+				_, _ = io.WriteString(w, "bounded-local-http-response")
+			}))
+			server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateClosed {
+					select {
+					case closed <- struct{}{}:
+					default:
+					}
+				}
+			}
+			server.Start()
+			defer server.Close()
+			var overrideCalls atomic.Int32
+			network := NewNetworkAdapter(t.Context(), &net.Dialer{Timeout: time.Second})
+			var dial func(context.Context, string, string) (essentials.Conn, error)
+			if override {
+				dial = func(ctx context.Context, network, address string) (essentials.Conn, error) {
+					overrideCalls.Add(1)
+					conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+					if err != nil {
+						return nil, err
+					}
+					return essentials.WrapNetConn(conn), nil
+				}
+			}
+			client := network.MakeHTTPClient(dial)
+			defer client.CloseIdleConnections()
+			response, err := client.Get(server.URL)
+			if err != nil {
+				t.Fatal("MTProxy helper rejected a valid local HTTP response", err)
+			}
+			body, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if err != nil || string(body) != "bounded-local-http-response" || override && overrideCalls.Load() != 1 {
+				t.Fatal("MTProxy helper lost the response or its caller's dial instrumentation")
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("MTProxy helper retained an idle control-plane connection")
+			}
+		})
 	}
 }
