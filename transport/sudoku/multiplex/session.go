@@ -21,8 +21,10 @@ const (
 const (
 	headerSize = 1 + 4 + 4
 	// maxQueuedBytesPerStream bounds unread payload retained by a single logical stream.
-	// A stream that exceeds the limit is reset so it cannot block the shared demux loop.
+	// A busy reader gets a bounded chance to drain; a stalled stream is reset so
+	// it cannot indefinitely block the shared demux loop.
 	maxQueuedBytesPerStream = 4 * 1024 * 1024
+	receiveQueueDrainGrace  = 250 * time.Millisecond
 	maxFrameSize            = 256 * 1024
 	maxDataPayload          = 128 * 1024
 	keepaliveInterval       = 15 * time.Second
@@ -641,8 +643,26 @@ func (c *stream) enqueue(payload []byte) error {
 	if c.closed || c.localReadClosed || c.remoteWriteClosed {
 		return nil
 	}
-	if c.queuedBytes+len(payload) > maxQueuedBytesPerStream {
+	if len(payload) > maxQueuedBytesPerStream {
 		return errMuxReceiveQueueFull
+	}
+	if c.queuedBytes+len(payload) > maxQueuedBytesPerStream {
+		deadline := time.Now().Add(receiveQueueDrainGrace)
+		timer := time.AfterFunc(receiveQueueDrainGrace, func() {
+			c.mu.Lock()
+			c.cond.Broadcast()
+			c.mu.Unlock()
+		})
+		defer timer.Stop()
+		for c.queuedBytes+len(payload) > maxQueuedBytesPerStream && !c.closed && !c.localReadClosed && !c.remoteWriteClosed {
+			if !time.Now().Before(deadline) {
+				return errMuxReceiveQueueFull
+			}
+			c.cond.Wait()
+		}
+		if c.closed || c.localReadClosed || c.remoteWriteClosed {
+			return nil
+		}
 	}
 	c.queuedBytes += len(payload)
 	if len(c.readBuf) == 0 && len(c.queue) == 0 {
