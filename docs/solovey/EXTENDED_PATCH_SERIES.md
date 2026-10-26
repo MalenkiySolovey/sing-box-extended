@@ -22,4 +22,8 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0016 | Give active Sudoku multiplex readers bounded drain grace while retaining the 4 MiB receive limit and stalled-stream reset | ./transport/sudoku/multiplex |
 | EXTENDED-0017 | Validate resolved Sudoku protocol settings before acquiring an inbound, HTTP tunnel or listener | ./protocol/sudoku -run TestSudokuConstruction; PANEL: ./service -run TestSudokuCompleteCandidateRejectsBeforeOwnerCommit |
 
+| EXTENDED-0018 | Validate Bond wire index/count and ratio bounds; reject overflowing outbound totals before constructing children | ./protocol/bond -run TestBond(Rejects\|Outbound) |
+| EXTENDED-0019 | Preserve large/short Bond writes, bounded frames and caller read accounting | ./protocol/bond -run TestBond(Frames\|Read) |
+| EXTENDED-0020 | Own Bond cache/admission, pending/routed legs and all-leg callbacks through serving Scope; reject duplicate/conflicting bundles | ./protocol/bond -run TestBond |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
