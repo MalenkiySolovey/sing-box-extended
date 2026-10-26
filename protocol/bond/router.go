@@ -39,6 +39,9 @@ func (r *Router) RouteConnectionEx(ctx context.Context, conn net.Conn, metadata 
 		r.Router.RouteConnectionEx(ctx, conn, metadata, onClose)
 		return
 	}
+	if onClose != nil {
+		onClose = N.OnceClose(onClose)
+	}
 	if err := r.handler(ctx, conn, metadata, onClose); err != nil {
 		r.logger.ErrorContext(ctx, err)
 		N.CloseOnHandshakeFailure(conn, onClose, err)
