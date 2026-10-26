@@ -34,3 +34,5 @@ Accepted patch commits after first conflict: 0. Git range-diff requires a nonemp
 ```
 
 The selected production base and pristine ref stay unchanged. Future real updates must repeat range-diff review, classify every patch, run owned core CI and Panel provider/runtime regressions before pin acceptance. The simulation scratch refs and full negative logs are retained as migration evidence, not build authorities.
+
+The simulations above qualify the original fourteen-patch ownership migration. Subsequent EXTENDED-0015 is a new Sudoku lifetime correction on that accepted queue, not an upstream refresh; these historical simulation identities are not relabeled as proof of the fifteenth patch. Its own before/fixed regression and repository CI qualify the new source delta. A future upstream replay must review all fifteen patches for semantic obsolescence.
