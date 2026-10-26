@@ -19,5 +19,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0013 | Read the configured MTProxy polling interval independently of handshake timeout | ./protocol/mtproxy -run TestMTProxyDoppelGangerInterval |
 | EXTENDED-0014 | Use a bounded HTTP timeout and honor the MTProxy dial override | ./protocol/mtproxy -run TestMTProxyHTTPHelper |
 | EXTENDED-0015 | Retire Sudoku accepted transports, detached HTTP sessions/pull leases and reapers with serving Scope; retain inbound identity and TCP half-close | ./protocol/sudoku; ./transport/sudoku/... |
+| EXTENDED-0016 | Give active Sudoku multiplex readers bounded drain grace while retaining the 4 MiB receive limit and stalled-stream reset | ./transport/sudoku/multiplex |
 
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
