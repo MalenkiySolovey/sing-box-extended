@@ -35,11 +35,25 @@ type Outbound struct {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.BondOutboundOptions) (adapter.Outbound, error) {
+	// The wire count and index are bytes; sum using integers before constructing
+	// any child so overflowing ratios cannot accidentally appear to total 100.
+	var legCount, totalDownloadRatio, totalUploadRatio int
+	for _, item := range options.Outbounds {
+		count := max(int(item.Count), 1)
+		legCount += count
+		totalDownloadRatio += count * int(item.DownloadRatio)
+		totalUploadRatio += count * int(item.UploadRatio)
+	}
+	if legCount == 0 || legCount > 255 {
+		return nil, E.New("invalid bond leg count")
+	}
+	if totalDownloadRatio != 100 || totalUploadRatio != 100 {
+		return nil, E.New("invalid ratios")
+	}
 	outboundRegistry := service.FromContext[adapter.OutboundRegistry](ctx)
 	outbounds := make([]adapter.Outbound, 0, len(options.Outbounds))
 	downloadRatios := make([]uint8, 0, len(options.Outbounds))
 	uploadRatios := make([]uint8, 0, len(options.Outbounds))
-	var totalDownloadRatio, totalUploadRatio uint8
 	for _, outboundOptions := range options.Outbounds {
 		count := outboundOptions.Count
 		if count == 0 {
@@ -53,12 +67,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			outbounds = append(outbounds, outbound)
 			downloadRatios = append(downloadRatios, outboundOptions.DownloadRatio)
 			uploadRatios = append(uploadRatios, outboundOptions.UploadRatio)
-			totalDownloadRatio += outboundOptions.DownloadRatio
-			totalUploadRatio += outboundOptions.UploadRatio
 		}
-	}
-	if totalDownloadRatio != 100 || totalUploadRatio != 100 {
-		return nil, E.New("invalid ratios")
 	}
 	outbound := &Outbound{
 		Adapter:        outbound.NewAdapter(C.TypeBond, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{}),

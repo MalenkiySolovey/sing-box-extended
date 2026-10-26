@@ -70,10 +70,16 @@ func ReadRequest(reader io.Reader) (*Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := request.validate(); err != nil {
+		return nil, err
+	}
 	return &request, nil
 }
 
 func WriteRequest(writer io.Writer, request *Request) error {
+	if err := request.validate(); err != nil {
+		return err
+	}
 	var requestLen int
 	requestLen += 1  // version
 	requestLen += 16 // UUID
@@ -96,5 +102,19 @@ func WriteRequest(writer io.Writer, request *Request) error {
 	if err != nil {
 		return err
 	}
-	return common.Error(writer.Write(buffer.Bytes()))
+	n, err := writer.Write(buffer.Bytes())
+	if err == nil && n != buffer.Len() {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+func (r *Request) validate() error {
+	if r.Count == 0 || r.Index >= r.Count {
+		return E.New("invalid bond leg index/count")
+	}
+	if r.DownloadRatio > 100 || r.UploadRatio > 100 {
+		return E.New("invalid bond leg ratios")
+	}
+	return nil
 }
