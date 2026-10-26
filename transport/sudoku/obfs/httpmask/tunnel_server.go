@@ -52,8 +52,11 @@ type TunnelServer struct {
 	sessionTTL      time.Duration
 	earlyHandshake  *TunnelServerEarlyHandshake
 
-	mu       sync.Mutex
-	sessions map[string]*tunnelSession
+	mu        sync.Mutex
+	sessions  map[string]*tunnelSession
+	closed    bool
+	closeDone chan struct{}
+	reapers   sync.WaitGroup
 }
 
 const tunnelHeaderReadTimeout = 15 * time.Second
@@ -130,7 +133,41 @@ func NewTunnelServer(opts TunnelServerOptions) *TunnelServer {
 		sessionTTL:          ttl,
 		earlyHandshake:      opts.EarlyHandshake,
 		sessions:            make(map[string]*tunnelSession),
+		closeDone:           make(chan struct{}),
 	}
+}
+
+// Close retires logical sessions independently of their most recent HTTP
+// request. The caller remains responsible for accepted raw transports.
+func (s *TunnelServer) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		done := s.closeDone
+		s.mu.Unlock()
+		<-done
+		return nil
+	}
+	s.closed = true
+	sessions := s.sessions
+	s.sessions = nil
+	s.mu.Unlock()
+	for _, sess := range sessions {
+		sess.close()
+	}
+	s.reapers.Wait()
+	close(s.closeDone)
+	return nil
+}
+
+func (s *tunnelSession) close() {
+	if s.closed != nil {
+		s.closeOnce.Do(func() { close(s.closed) })
+	}
+	s.pullMu.Lock()
+	lease := s.pull
+	s.pullMu.Unlock()
+	lease.stop()
+	_ = s.conn.Close()
 }
 
 // HandleConn inspects rawConn. If it is an HTTP tunnel request (stream/poll), it is handled here and:
@@ -141,6 +178,13 @@ func NewTunnelServer(opts TunnelServerOptions) *TunnelServer {
 func (s *TunnelServer) HandleConn(rawConn net.Conn) (HandleResult, net.Conn, error) {
 	if rawConn == nil {
 		return HandleDone, nil, errors.New("nil conn")
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		_ = rawConn.Close()
+		return HandleDone, nil, net.ErrClosed
 	}
 
 	passThrough := func(prefix []byte) (HandleResult, net.Conn, error) {
@@ -744,10 +788,21 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = c1.Close()
+		_ = c2.Close()
+		_ = rawConn.Close()
+		return HandleDone, nil, net.ErrClosed
+	}
 	s.sessions[token] = &tunnelSession{conn: c2, closed: make(chan struct{}), lastActive: time.Now(), nextUploadSeq: 1}
+	s.reapers.Add(1)
 	s.mu.Unlock()
 
-	go s.reapLater(token)
+	go func() {
+		defer s.reapers.Done()
+		s.reapLater(token)
+	}()
 
 	if err := writeTokenHTTPResponse(rawConn, token, responsePayload); err != nil {
 		s.sessionClose(token)
@@ -812,11 +867,7 @@ func (s *TunnelServer) reapLater(token string) {
 		if idle >= ttl && !active {
 			delete(s.sessions, token)
 			s.mu.Unlock()
-			sess.pullMu.Lock()
-			lease := sess.pull
-			sess.pullMu.Unlock()
-			lease.stop()
-			_ = sess.conn.Close()
+			sess.close()
 			return
 		}
 		next := ttl - idle
@@ -870,14 +921,7 @@ func (s *TunnelServer) sessionClose(token string) {
 	}
 	s.mu.Unlock()
 	if ok {
-		if sess.closed != nil {
-			sess.closeOnce.Do(func() { close(sess.closed) })
-		}
-		sess.pullMu.Lock()
-		lease := sess.pull
-		sess.pullMu.Unlock()
-		lease.stop()
-		_ = sess.conn.Close()
+		sess.close()
 	}
 }
 
@@ -1090,6 +1134,12 @@ func (s *TunnelServer) beginSessionPull(token string, sess *tunnelSession, rawCo
 		}
 
 		sess.pullMu.Lock()
+		select {
+		case <-sess.closed:
+			sess.pullMu.Unlock()
+			return nil, false
+		default:
+		}
 		previous := sess.pull
 		if previous == nil {
 			lease := newSessionPullLease(rawConn)
