@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -14,7 +15,10 @@ type bondedConn struct {
 	downloadRatios []uint8
 	uploadRatios   []uint8
 
-	readBuffer *bytes.Buffer
+	readAccess  sync.Mutex
+	writeAccess sync.Mutex
+	readBuffer  *bytes.Buffer
+	readErr     error
 }
 
 func NewBondedConn(conns []net.Conn, downloadRatios, uploadRatios []uint8) *bondedConn {
@@ -27,7 +31,15 @@ func NewBondedConn(conns []net.Conn, downloadRatios, uploadRatios []uint8) *bond
 }
 
 func (c *bondedConn) Read(b []byte) (n int, err error) {
-	if c.readBuffer.Len() == 0 {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
+	for c.readBuffer.Len() == 0 {
+		if c.readErr != nil {
+			return 0, c.readErr
+		}
 		c.readBuffer.Reset()
 		var header [2]byte
 		_, err := io.ReadFull(c.conns[0], header[:])
@@ -36,50 +48,67 @@ func (c *bondedConn) Read(b []byte) (n int, err error) {
 		}
 		size := int(binary.BigEndian.Uint16(header[:]))
 		chunkLens := splitByRatios(size, c.downloadRatios)
-		total := 0
 		for i, chunkLen := range chunkLens {
 			if chunkLen == 0 {
 				continue
 			}
-			n, err := io.CopyN(c.readBuffer, c.conns[i], int64(chunkLen))
-			total += int(n)
+			_, err := io.CopyN(c.readBuffer, c.conns[i], int64(chunkLen))
 			if err != nil {
-				return total, err
+				c.readErr = err
+				break
 			}
 		}
 	}
-	return c.readBuffer.Read(b)
+	n, _ = c.readBuffer.Read(b)
+	if c.readBuffer.Len() == 0 {
+		return n, c.readErr
+	}
+	return n, nil
 }
 
 func (c *bondedConn) Write(b []byte) (n int, err error) {
-	chunkLens := splitByRatios(len(b), c.uploadRatios)
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(len(b)))
-	_, err = c.conns[0].Write(header[:])
-	if err != nil {
-		return 0, err
-	}
+	c.writeAccess.Lock()
+	defer c.writeAccess.Unlock()
 	total := 0
-	for i, chunkLen := range chunkLens {
-		if chunkLen == 0 {
-			continue
+	for len(b) > 0 {
+		// A write may exceed the uint16 frame length used on the wire.
+		frame := b[:min(len(b), 65535)]
+		var header [2]byte
+		binary.BigEndian.PutUint16(header[:], uint16(len(frame)))
+		if _, err := writeFull(c.conns[0], header[:]); err != nil {
+			return total, err
 		}
-		chunk := b[total : total+chunkLen]
-		conn := c.conns[i]
-		subTotal := 0
-		for subTotal < len(chunk) {
-			n, err := conn.Write(chunk[subTotal:])
-			subTotal += n
+		offset := 0
+		for i, chunkLen := range splitByRatios(len(frame), c.uploadRatios) {
+			if chunkLen == 0 {
+				continue
+			}
+			n, err := writeFull(c.conns[i], frame[offset:offset+chunkLen])
 			total += n
 			if err != nil {
 				return total, err
 			}
-			if n == 0 {
-				return total, io.ErrUnexpectedEOF
-			}
+			offset += chunkLen
 		}
+		b = b[len(frame):]
 	}
-	return total, err
+	return total, nil
+}
+
+func writeFull(writer io.Writer, b []byte) (int, error) {
+	total := 0
+	for len(b) > 0 {
+		n, err := writer.Write(b)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return total, nil
 }
 
 func (c *bondedConn) Close() error {
