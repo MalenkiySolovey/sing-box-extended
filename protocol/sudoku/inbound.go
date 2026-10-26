@@ -72,6 +72,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if options.AEADMethod != "" {
 		protoConf.AEADMethod = options.AEADMethod
 	}
+	if err := protoConf.Validate(); err != nil {
+		return nil, err
+	}
 
 	inbound := &Inbound{
 		Adapter:     inbound.NewAdapter(C.TypeSudoku, tag),
