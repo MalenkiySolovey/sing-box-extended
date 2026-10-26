@@ -14,6 +14,13 @@ type HTTPMaskTunnelServer struct {
 	ts  *httpmask.TunnelServer
 }
 
+func (s *HTTPMaskTunnelServer) Close() error {
+	if s == nil || s.ts == nil {
+		return nil
+	}
+	return s.ts.Close()
+}
+
 func newHTTPMaskEarlyCodecConfig(cfg *ProtocolConfig, psk string) EarlyCodecConfig {
 	return EarlyCodecConfig{
 		PSK:                psk,
