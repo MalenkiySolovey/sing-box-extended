@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "f8418fdeddf990b187a5698b71e7c0808fd6990e",
+  "codeTree": "f78f98610351299a6657a100a2189fcba1c96dcf",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -25,7 +25,10 @@
     "EXTENDED-0014",
     "EXTENDED-0015",
     "EXTENDED-0016",
-    "EXTENDED-0017"
+    "EXTENDED-0017",
+    "EXTENDED-0018",
+    "EXTENDED-0019",
+    "EXTENDED-0020"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
@@ -50,7 +53,8 @@
     "./protocol/ssh",
     "./protocol/mtproxy",
     "./protocol/sudoku",
-    "./transport/sudoku/..."
+    "./transport/sudoku/...",
+    "./protocol/bond"
   ],
   "buildTags": "with_quic,with_grpc,with_utls,with_gvisor",
   "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",

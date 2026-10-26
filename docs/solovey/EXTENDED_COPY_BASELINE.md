@@ -6,7 +6,7 @@ COPY_ROLE=mirror/cache/development
 
 Copy: https://github.com/MalenkiySolovey/sing-box-extended. Upstream authorship, full Git ancestry, licenses and notices are retained. This is a source copy with a temporary patch queue, not an independent core product. The Panel owns selection, adapters, capabilities and exact build pins; this repository owns engine changes.
 
-Selected upstream: v1.14.3-extended-2.7.3, d9442d14b19ddd02605bf3ee893a171947038e19, tree dae57a05c1392b57f03f03e987ed5807b45e14bc. Pristine ref: mirror/extended. Patch branch: solovey/extended-patches. It contains 17 ENGINE_PATCH_REQUIRED logical source commits plus repository policy/CI metadata. No upstream merge commits belong in this queue.
+Selected upstream: v1.14.3-extended-2.7.3, d9442d14b19ddd02605bf3ee893a171947038e19, tree dae57a05c1392b57f03f03e987ed5807b45e14bc. Pristine ref: mirror/extended. Patch branch: solovey/extended-patches. It contains 20 ENGINE_PATCH_REQUIRED logical source commits plus repository policy/CI metadata. No upstream merge commits belong in this queue.
 
 The pre-policy code tree 11e8da4309020a913e4ba69412631e6cf1465aa2 is byte-identical to every source and regression-test file in historical 541794dcd3e50f1254a09131bb47ddae01e2ffb7. Intentional removals are SOLOVEY_INTEGRATION.md and .github/workflows/solovey-integration.yml; their provenance and CI duties move here. No compiled behavior is removed.
 
@@ -19,3 +19,5 @@ EXTENDED-0017 at aa089b991c4cfcb48f2d6a06a8eb1f1c13271376, code tree f8418fdeddf
 All local code changes are upstream contribution candidates, prepared but not submitted. Removal requires equivalent upstream behavior plus the same passing regressions. External upstream PR submission needs operator authorization.
 
 Pristine branches must receive only fast-forward synchronization to reviewed upstream points; patch/topic PRs target solovey/* branches. Branch protection should reject ordinary integration PRs into mirror/* while allowing the synchronization identity to fast-forward. No upstream or pristine ref is rewritten by this migration.
+
+EXTENDED-0018 (26ba263e6da19d656f3966fffc0e2494031d238a), EXTENDED-0019 (3a8e7129ecd6bc5d9ebc002fb29d116989e14acb) and EXTENDED-0020 (843f0e8f8ec1d3210fa083fbd31be60f5b24ab24) correct Bond admission, framing and serving lifetime on the same pristine source. Before/fixed probes reproduce malformed leg acceptance, byte-overflow totals, large/short-write corruption, retained completed bundles, blocked headers and duplicate/conflicting legs. Focused race tests include real asymmetric bidirectional traffic, all-leg callbacks, pending eviction and reentrant Scope closure. Final source code tree: f78f98610351299a6657a100a2189fcba1c96dcf. The existing Shtorm go-cache authority/revision remains consumed directly; no dependency fork, module version change, OS-specific provider or Panel pin update is introduced here. Repository CI qualifies the full linear queue before Panel may select it.
