@@ -50,11 +50,15 @@ func TestFailoverNativeSessionTrafficReconnectAndScope(t *testing.T) {
 	if err := f.Start(adapter.StartStateInitialize, clientScope); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := f.DialContext(t.Context(), N.NetworkTCP, M.Socksaddr{Fqdn: "echo.invalid", Port: 443})
+	dialCtx, cancelDial := context.WithCancel(t.Context())
+	defer cancelDial()
+	conn, err := f.DialContext(dialCtx, N.NetworkTCP, M.Socksaddr{Fqdn: "echo.invalid", Port: 443})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	// A successful net.Conn must survive cancellation of its completed dial.
+	cancelDial()
 	payload := bytes.Repeat([]byte("source-owned-session"), 6000)
 	exchange := func() {
 		t.Helper()
