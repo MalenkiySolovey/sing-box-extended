@@ -46,4 +46,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0032 | Reject unusable Call platform/mode/credential candidates and unimplemented buffer constraints before dialer acquisition | ./protocol/call -run TestCallConstruction |
 | EXTENDED-0033 | Keep room keys, signaling/auth responses and request URLs private; retain created room in trusted native state | ./transport/call/common -run TestCallDiagnostics; ./protocol/call -run TestCall |
 
+| EXTENDED-0034 | Bind Call outbound setup/awaiters and late bridge to the serving Scope; synchronize publication and retire selected network transports | ./protocol/call -run TestCallOutbound |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
