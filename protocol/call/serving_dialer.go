@@ -26,6 +26,8 @@ func newServingDialer(ctx context.Context, upstream N.Dialer) *servingDialer {
 	return &servingDialer{Dialer: upstream, ctx: ctx, connections: make(map[io.Closer]struct{})}
 }
 
+func (d *servingDialer) Context() context.Context { return d.ctx }
+
 // ICE and platform DNS paths inspect ResolveDialer. Preserve that contract only
 // when the selected upstream actually implements it; keep network I/O owned.
 func (d *servingDialer) transportDialer() N.Dialer {
