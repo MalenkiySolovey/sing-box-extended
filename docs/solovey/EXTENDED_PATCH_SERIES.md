@@ -34,4 +34,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0025 | Bind outbound sessions, reconnect dialing and failed handshake transports to serving lifetime | ./protocol/failover -run TestFailover(NativeSession|CanceledHandshake) |
 | EXTENDED-0026 | Notify rejected native failover leg owners exactly once across handler/router cleanup | ./protocol/failover -run TestFailoverRejectedLeg |
 
+| EXTENDED-0027 | Keep connected failover sessions alive after completed dial cancellation; retain serving Scope retirement | ./protocol/failover -run TestFailover(NativeSession|CanceledHandshake) |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
