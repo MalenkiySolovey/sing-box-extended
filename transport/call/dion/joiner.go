@@ -95,15 +95,21 @@ func (j *DionJoiner) RunWithParams(jsonParams string) {
 func (j *DionJoiner) MarkConfigAcked() { j.configAck.Mark() }
 
 func (j *DionJoiner) Close() {
+	j.stop()
 	j.mu.Lock()
-	j.closed = true
 	call := j.call
 	j.call = nil
 	j.mu.Unlock()
-	j.stopOnce.Do(func() { close(j.stopCh) })
 	if call != nil {
 		call.Close()
 	}
+}
+
+func (j *DionJoiner) stop() {
+	j.mu.Lock()
+	j.closed = true
+	j.mu.Unlock()
+	j.stopOnce.Do(func() { close(j.stopCh) })
 }
 
 func (j *DionJoiner) runOnce() error {
@@ -126,6 +132,7 @@ func (j *DionJoiner) runOnce() error {
 		DNSRouter:   j.dnsRouter,
 		Role:        RoleJoiner,
 	})
+	defer call.Close()
 	call.OnConnected = func(tun tunnel.DataTunnel) {
 		j.reconnectAttempt.Store(0)
 		j.logger.Info("dion-joiner: === TUNNEL CONNECTED ===")
@@ -135,7 +142,7 @@ func (j *DionJoiner) runOnce() error {
 	}
 	call.OnKicked = func() {
 		j.logger.Debug("dion-joiner: kicked from conference, shutting down")
-		go j.Close()
+		j.stop()
 	}
 	j.mu.Lock()
 	if j.closed {
@@ -153,7 +160,10 @@ func (j *DionJoiner) runOnce() error {
 		j.mu.Unlock()
 		return fmt.Errorf("call: %w", err)
 	}
-	<-call.Done()
+	select {
+	case <-call.Done():
+	case <-j.stopCh:
+	}
 	call.Close()
 	j.mu.Lock()
 	if j.call == call {

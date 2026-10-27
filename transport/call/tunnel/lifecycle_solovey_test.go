@@ -23,6 +23,70 @@ func (*retirementTunnel) SetOnData(func([]byte)) {}
 func (*retirementTunnel) SetOnClose(func())      {}
 func (*retirementTunnel) Reconfigure(int, int)   {}
 
+func TestCallJoinerBridgeOwnsReconnectAndWorkerRetirement(t *testing.T) {
+	for _, connected := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(t.Context())
+		stop := make(chan struct{})
+		workerDone := make(chan struct{})
+		first := &retirementTunnel{sent: make(chan struct{})}
+		owner := NewJoinerBridge(ctx, nil, logger.NOP(), func(DataTunnel) int { return 32768 }, nil)
+		type result struct {
+			bridge *RelayBridge
+			err    error
+		}
+		finished := make(chan result, 1)
+		started := make(chan struct{})
+		go func() {
+			bridge, err := owner.Run(func() {
+				close(started)
+				if connected {
+					owner.OnConnected(first)
+				}
+				<-stop
+				close(workerDone)
+			}, func() { close(stop) })
+			finished <- result{bridge, err}
+		}()
+		<-started
+		if !connected {
+			cancel()
+		}
+		var current result
+		select {
+		case current = <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("joiner setup did not observe connection/cancellation")
+		}
+		if connected {
+			if current.err != nil || current.bridge == nil {
+				t.Fatal("connected worker failed to publish its relay")
+			}
+			next := &retirementTunnel{sent: make(chan struct{})}
+			owner.OnConnected(next)
+			if current.bridge.currentTunnel() != next {
+				t.Fatal("reconnected tunnel did not replace the active relay transport")
+			}
+			current.bridge.Close()
+			owner.OnConnected(first)
+			if !current.bridge.IsClosed() || current.bridge.currentTunnel() != next {
+				t.Fatal("late platform callback republished a retired relay")
+			}
+		} else if current.err == nil || current.bridge != nil {
+			t.Fatal("canceled setup returned a live relay")
+		}
+		select {
+		case <-workerDone:
+		case <-time.After(time.Second):
+			t.Fatal("joiner relay retirement retained its platform worker")
+		}
+		cancel()
+	}
+	owner := NewJoinerBridge(t.Context(), nil, logger.NOP(), func(DataTunnel) int { return 32768 }, nil)
+	if bridge, err := owner.Run(func() {}, func() {}); err == nil || bridge != nil {
+		t.Fatal("failed platform worker left setup waiting for a nonexistent tunnel")
+	}
+}
+
 func TestCallRelayRetiresPendingAndPacketStreams(t *testing.T) {
 	wire := &retirementTunnel{sent: make(chan struct{})}
 	relay := NewRelayBridge(wire, "joiner", 32768, nil, logger.NOP())

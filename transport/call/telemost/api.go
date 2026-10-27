@@ -1,6 +1,7 @@
 package telemost
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/headlessapi"
 
 	"github.com/google/uuid"
@@ -80,12 +82,16 @@ type Client struct {
 }
 
 func (c *Client) Do(method, path string, body any) ([]byte, int, error) {
+	return c.doContext(context.Background(), method, path, body)
+}
+
+func (c *Client) doContext(ctx context.Context, method, path string, body any) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		data, _ := json.Marshal(body)
 		bodyReader = strings.NewReader(string(data))
 	}
-	req, err := http.NewRequest(method, APIBase+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, APIBase+path, bodyReader)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -127,18 +133,22 @@ func (c *Client) TMRequest(method, path string) ([]byte, int, error) {
 }
 
 func (c *Client) RequestStates(joinURI, peerID string) error {
+	return c.RequestStatesContext(context.Background(), joinURI, peerID)
+}
+
+func (c *Client) RequestStatesContext(ctx context.Context, joinURI, peerID string) error {
 	confURL := url.QueryEscape(joinURI)
 	body := map[string]any{
 		"peers":       []map[string]string{{"peer_id": peerID}},
 		"permissions": map[string]any{},
 		"conference":  map[string]any{"version": -1},
 	}
-	r, status, err := c.Do("POST", "/conferences/"+confURL+"/request-states", body)
+	r, status, err := c.doContext(ctx, "POST", "/conferences/"+confURL+"/request-states", body)
 	if err != nil {
 		return err
 	}
 	if status != 200 {
-		return fmt.Errorf("status %d: %s", status, string(r))
+		return fmt.Errorf("status %d: %s", status, common.BodySnippet(r))
 	}
 	return nil
 }

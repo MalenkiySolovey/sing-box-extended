@@ -145,23 +145,11 @@ func ConnectJoiner(ctx context.Context, roomID, displayName string, readBuf int,
 		readBuf = 32768
 	}
 	joiner := NewDionJoiner(logger, dialer, dnsRouter)
-	tunCh := make(chan tunnel.DataTunnel, 1)
-	joiner.OnConnected = func(tun tunnel.DataTunnel) {
-		select {
-		case tunCh <- tun:
-		default:
-		}
-	}
+	owner := tunnel.NewJoinerBridge(ctx, dialer, logger, func(tun tunnel.DataTunnel) int { return readBuf }, joiner.MarkConfigAcked)
+	joiner.OnConnected = owner.OnConnected
 	params := fmt.Sprintf(`{"roomId":%q,"displayName":%q}`, roomID, displayName)
-	go joiner.RunWithParams(params)
-	select {
-	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", readBuf, dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
-	case <-ctx.Done():
-		joiner.Close()
-		return nil, ctx.Err()
-	}
+	return owner.Run(func() {
+		defer joiner.Close()
+		joiner.RunWithParams(params)
+	}, joiner.stop)
 }

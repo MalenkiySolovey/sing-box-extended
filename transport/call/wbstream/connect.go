@@ -127,25 +127,13 @@ func ConnectJoiner(ctx context.Context, roomID, displayName, mode string, readBu
 		readBuf = 32768
 	}
 	joiner := NewWBStreamJoiner(logger, dialer, dnsRouter, nil)
-	tunCh := make(chan tunnel.DataTunnel, 1)
-	joiner.OnConnected = func(tun tunnel.DataTunnel) {
-		select {
-		case tunCh <- tun:
-		default:
-		}
-	}
+	owner := tunnel.NewJoinerBridge(ctx, dialer, logger, func(tun tunnel.DataTunnel) int { return bridgeReadBufFor(tun, readBuf) }, joiner.MarkConfigAcked)
+	joiner.OnConnected = owner.OnConnected
 	params := fmt.Sprintf(`{"roomId":%q,"displayName":%q,"tunnelMode":%q}`, roomID, displayName, mode)
-	go joiner.RunWithParams(params)
-	select {
-	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", bridgeReadBufFor(tun, readBuf), dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
-	case <-ctx.Done():
-		joiner.Close()
-		return nil, ctx.Err()
-	}
+	return owner.Run(func() {
+		defer joiner.Close()
+		joiner.RunWithParams(params)
+	}, joiner.stop)
 }
 
 func creatorReconnectLoop(

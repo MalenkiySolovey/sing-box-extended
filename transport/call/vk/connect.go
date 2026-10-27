@@ -158,22 +158,10 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf in
 		dialer,
 		dnsRouter,
 	)
-	tunCh := make(chan tunnel.DataTunnel, 1)
-	joiner.OnConnected = func(tun tunnel.DataTunnel) {
-		select {
-		case tunCh <- tun:
-		default:
-		}
-	}
-	go joiner.RunWithParams(string(paramsJSON))
-	select {
-	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", readBuf, dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
-	case <-ctx.Done():
-		joiner.Close()
-		return nil, ctx.Err()
-	}
+	owner := tunnel.NewJoinerBridge(ctx, dialer, logger, func(tun tunnel.DataTunnel) int { return readBuf }, joiner.MarkConfigAcked)
+	joiner.OnConnected = owner.OnConnected
+	return owner.Run(func() {
+		defer joiner.Close()
+		joiner.RunWithParams(string(paramsJSON))
+	}, joiner.stop)
 }

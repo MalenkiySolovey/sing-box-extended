@@ -179,15 +179,7 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 }
 
 func (j *TelemostJoiner) Close() {
-	j.closeMu.Lock()
-	j.closed = true
-	j.closeMu.Unlock()
-	j.stopOnce.Do(func() { close(j.stopCh) })
-	j.wsMu.Lock()
-	ws := j.ws
-	j.ws = nil
-	j.wsMu.Unlock()
-	common.CloseWS(ws)
+	j.stop()
 	if j.vp8tunnel != nil {
 		j.vp8tunnel.Stop()
 	}
@@ -197,6 +189,19 @@ func (j *TelemostJoiner) Close() {
 	if j.pubPC != nil {
 		j.pubPC.Close()
 	}
+}
+
+// stop interrupts the worker without touching peer fields it may still create.
+func (j *TelemostJoiner) stop() {
+	j.closeMu.Lock()
+	j.closed = true
+	j.closeMu.Unlock()
+	j.stopOnce.Do(func() { close(j.stopCh) })
+	j.wsMu.Lock()
+	ws := j.ws
+	j.ws = nil
+	j.wsMu.Unlock()
+	common.CloseWS(ws)
 }
 
 func TmParseMids(sdp string) (audioMid, videoMid string) {
@@ -925,40 +930,49 @@ func (j *TelemostJoiner) connectAndRun() {
 		return
 	}
 	j.wsMu.Lock()
+	if j.isClosed() {
+		j.wsMu.Unlock()
+		common.CloseWS(ws)
+		return
+	}
 	j.ws = ws
 	j.wsMu.Unlock()
 	j.logger.Debug("telemost-joiner: ws connected")
 	j.sendHello()
-	stopPing := make(chan struct{})
+	workerCtx, cancelWorkers := context.WithCancel(common.ContextForDialer(j.dialer))
+	defer cancelWorkers()
+	var workers sync.WaitGroup
+	workers.Add(2)
 	go func() {
+		defer workers.Done()
 		ticker := time.NewTicker(TmPingPeriod)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stopPing:
+			case <-workerCtx.Done():
 				return
 			case <-ticker.C:
 				j.wsSend(map[string]any{"uid": uuid.New().String(), "ping": map[string]any{}})
 			}
 		}
 	}()
-	stopStateKeepalive := make(chan struct{})
 	go func() {
+		defer workers.Done()
 		interval := j.stateCheckIntervalS
 		if interval <= 0 {
 			interval = 30
 		}
-		if err := j.apiClient().RequestStates(j.joinLink, j.peerID); err != nil {
+		if err := j.apiClient().RequestStatesContext(workerCtx, j.joinLink, j.peerID); err != nil {
 			j.logger.Debug(fmt.Sprintf("telemost-joiner: initial request-states: %v", common.MaskError(err)))
 		}
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stopStateKeepalive:
+			case <-workerCtx.Done():
 				return
 			case <-ticker.C:
-				if err := j.apiClient().RequestStates(j.joinLink, j.peerID); err != nil {
+				if err := j.apiClient().RequestStatesContext(workerCtx, j.joinLink, j.peerID); err != nil {
 					j.logger.Debug(fmt.Sprintf("telemost-joiner: request-states: %v", common.MaskError(err)))
 				}
 			}
@@ -972,8 +986,8 @@ func (j *TelemostJoiner) connectAndRun() {
 		}
 		j.handleMessage(raw)
 	}
-	close(stopPing)
-	close(stopStateKeepalive)
+	cancelWorkers()
+	workers.Wait()
 	if j.vp8tunnel != nil {
 		j.vp8tunnel.Stop()
 	}

@@ -44,10 +44,11 @@ type BitrixJoiner struct {
 	reliable    bool
 	dualTrack   bool
 
-	sessMu sync.Mutex
-	sig    *Signal
-	ms     *MediaSession
-	pull   *PullClient
+	sessMu   sync.Mutex
+	sig      *Signal
+	ms       *MediaSession
+	pull     *PullClient
+	pullDone chan struct{}
 
 	closeMu sync.Mutex
 	closed  bool
@@ -145,11 +146,21 @@ func (j *BitrixJoiner) RunWithParams(jsonParams string) {
 }
 
 func (j *BitrixJoiner) Close() {
+	j.stop()
+	j.resetSessionState()
+}
+
+func (j *BitrixJoiner) stop() {
 	j.closeMu.Lock()
 	j.closed = true
 	j.closeMu.Unlock()
 	j.stopOnce.Do(func() { close(j.stopCh) })
-	j.resetSessionState()
+	j.sessMu.Lock()
+	sig := j.sig
+	j.sessMu.Unlock()
+	if sig != nil {
+		sig.Close()
+	}
 }
 
 func (j *BitrixJoiner) runOnce() error {
@@ -210,7 +221,11 @@ func (j *BitrixJoiner) runOnce() error {
 			j.OnConnected(tun)
 		}
 	}
-	j.setSession(sig, ms)
+	if !j.setSession(sig, ms) {
+		ms.Stop()
+		sig.Close()
+		return nil
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -219,6 +234,7 @@ func (j *BitrixJoiner) runOnce() error {
 		}
 		close(done)
 	}()
+	defer func() { sig.Close(); <-done }()
 
 	select {
 	case <-connected:
@@ -259,11 +275,15 @@ func (j *BitrixJoiner) makeTransport() http.RoundTripper {
 	})
 }
 
-func (j *BitrixJoiner) setSession(sig *Signal, ms *MediaSession) {
+func (j *BitrixJoiner) setSession(sig *Signal, ms *MediaSession) bool {
 	j.sessMu.Lock()
+	defer j.sessMu.Unlock()
+	if j.isClosed() {
+		return false
+	}
 	j.sig = sig
 	j.ms = ms
-	j.sessMu.Unlock()
+	return true
 }
 
 func (j *BitrixJoiner) startKickWatch(c *Client, sig *Signal, userAgent string) {
@@ -277,18 +297,26 @@ func (j *BitrixJoiner) startKickWatch(c *Client, sig *Signal, userAgent string) 
 		j.logger.Debug(fmt.Sprintf("bitrix-joiner: pull config failed, kick-detect disabled: %s", common.MaskError(err)))
 		return
 	}
-	pull := NewPullClient(pc, userAgent, j.portal, j.logger)
+	pull := NewPullClient(pc, userAgent, j.portal, j.logger, j.Dialer)
 	pull.SetOnUserLeave(func(uid string) {
 		if uid != selfID {
 			return
 		}
 		j.logger.Info(fmt.Sprintf("bitrix-joiner: kicked from conference (userId=%s), shutting down", uid))
-		go j.Close()
+		j.stop()
 	})
 	j.sessMu.Lock()
+	if j.isClosed() {
+		j.sessMu.Unlock()
+		pull.Close()
+		return
+	}
+	done := make(chan struct{})
 	j.pull = pull
+	j.pullDone = done
 	j.sessMu.Unlock()
 	go func() {
+		defer close(done)
 		if err := pull.Run(); err != nil {
 			j.logger.Debug(fmt.Sprintf("bitrix-joiner: subws2 pull ended: %s", common.MaskError(err)))
 		}
@@ -300,12 +328,15 @@ func (j *BitrixJoiner) resetSessionState() {
 	sig := j.sig
 	ms := j.ms
 	pull := j.pull
+	pullDone := j.pullDone
 	j.sig = nil
 	j.ms = nil
 	j.pull = nil
+	j.pullDone = nil
 	j.sessMu.Unlock()
 	if pull != nil {
 		pull.Close()
+		<-pullDone
 	}
 	if ms != nil {
 		ms.Stop()

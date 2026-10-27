@@ -1,9 +1,11 @@
 package bitrix
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 
 	headless "github.com/kulikov0/headless-client"
 	"github.com/kulikov0/headless-client/websocket"
@@ -29,6 +33,7 @@ type PullClient struct {
 	ua     string
 	origin string
 	logger logger.ContextLogger
+	dialer N.Dialer
 
 	mu     sync.Mutex
 	ws     *websocket.Conn
@@ -38,11 +43,11 @@ type PullClient struct {
 	onUserLeave     func(string)
 }
 
-func NewPullClient(cfg PullConfigResult, ua, origin string, log logger.ContextLogger) *PullClient {
+func NewPullClient(cfg PullConfigResult, ua, origin string, log logger.ContextLogger, dialer N.Dialer) *PullClient {
 	if log == nil {
 		log = logger.NOP()
 	}
-	return &PullClient{cfg: cfg, ua: ua, origin: origin, logger: log}
+	return &PullClient{cfg: cfg, ua: ua, origin: origin, logger: log, dialer: dialer}
 }
 
 func (p *PullClient) SetOnUsersAnswered(fn func([]string)) { p.onUsersAnswered = fn }
@@ -67,6 +72,12 @@ func (p *PullClient) dialURL() string {
 }
 
 func (p *PullClient) connect() error {
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return net.ErrClosed
+	}
 	headers := http.Header{}
 	if p.ua != "" {
 		headers.Set("User-Agent", p.ua)
@@ -74,8 +85,14 @@ func (p *PullClient) connect() error {
 	if p.origin != "" {
 		headers.Set("Origin", p.origin)
 	}
-	dialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{})
-	conn, resp, err := dialer.Dial(p.dialURL(), headers)
+	opts := headless.TLSOptions{}
+	if p.dialer != nil {
+		opts.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return p.dialer.DialContext(ctx, network, M.ParseSocksaddr(address))
+		}
+	}
+	dialer := headless.ChromeWindows.WebSocketDialer(opts)
+	conn, resp, err := dialer.DialContext(common.ContextForDialer(p.dialer), p.dialURL(), headers)
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("subws2 dial: %w, status %d", err, resp.StatusCode)
@@ -83,6 +100,11 @@ func (p *PullClient) connect() error {
 		return fmt.Errorf("subws2 dial: %w", err)
 	}
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		common.CloseWS(conn)
+		return net.ErrClosed
+	}
 	p.ws = conn
 	p.mu.Unlock()
 	p.logger.Debug("[bx] subws2 connected")
@@ -90,6 +112,7 @@ func (p *PullClient) connect() error {
 }
 
 func (p *PullClient) Run() error {
+	defer p.Close()
 	if err := p.connect(); err != nil {
 		return err
 	}
