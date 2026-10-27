@@ -191,6 +191,7 @@ func (j *BitrixJoiner) runOnce() error {
 		Logger:                 j.logger,
 		ConfigureSettingEngine: configureSettingEngine,
 		NetDialContext:         j.makeDialContext(),
+		Dialer:                 j.Dialer,
 		OnConnected: func() {
 			once.Do(func() { close(connected) })
 		},

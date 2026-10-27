@@ -55,6 +55,9 @@ type Config struct {
 
 type Client struct {
 	logger logger.ContextLogger
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
 
 	wsURL  string
 	token  string
@@ -67,8 +70,9 @@ type Client struct {
 	dnsRouter              adapter.DNSRouter
 	dialer                 N.Dialer
 
-	ws   *websocket.Conn
-	wsMu sync.Mutex
+	ws     *websocket.Conn
+	wsMu   sync.Mutex
+	sendMu sync.Mutex
 
 	join JoinResponse
 
@@ -99,8 +103,12 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Codec == nil {
 		return nil, fmt.Errorf("livekit: no codec")
 	}
+	ctx, cancel := context.WithCancel(common.ContextForDialer(cfg.Dialer))
 	return &Client{
 		logger:                 cfg.Logger,
+		ctx:                    ctx,
+		cancel:                 cancel,
+		done:                   make(chan struct{}),
 		wsURL:                  cfg.ServerURL,
 		token:                  cfg.Token,
 		origin:                 cfg.Origin,
@@ -120,6 +128,9 @@ func (c *Client) SubPC() *webrtc.PeerConnection { return c.subPC }
 func (c *Client) Joined() <-chan struct{}       { return c.joined }
 
 func (c *Client) Connect() error {
+	if c.closed.Load() || c.ctx.Err() != nil {
+		return net.ErrClosed
+	}
 	target, err := c.codec.DialURL(c.wsURL, c.token)
 	if err != nil {
 		return err
@@ -137,7 +148,7 @@ func (c *Client) Connect() error {
 	if c.netDialContext != nil {
 		dialer.NetDialContext = c.netDialContext
 	}
-	conn, resp, err := dialer.Dial(target, headers)
+	conn, resp, err := dialer.DialContext(c.ctx, target, headers)
 	if err != nil {
 		if resp != nil {
 			return fmt.Errorf("ws dial: %w, status %d", err, resp.StatusCode)
@@ -145,6 +156,11 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("ws dial: %w", err)
 	}
 	c.wsMu.Lock()
+	if c.closed.Load() || c.ctx.Err() != nil {
+		c.wsMu.Unlock()
+		common.CloseWS(conn)
+		return net.ErrClosed
+	}
 	c.ws = conn
 	c.wsMu.Unlock()
 	c.logger.Info("[lk] signaling connected")
@@ -184,6 +200,8 @@ func (c *Client) Close() {
 	if !c.closed.CompareAndSwap(false, true) {
 		return
 	}
+	c.cancel()
+	close(c.done)
 	c.wsMu.Lock()
 	ws := c.ws
 	c.ws = nil
@@ -201,6 +219,19 @@ func (c *Client) Close() {
 	if subPC != nil {
 		_ = subPC.Close()
 	}
+}
+
+// Run owns the paired signaling workers. Close interrupts them, while Run
+// returns only after both have exited; callbacks may call Close without joining
+// the read worker from inside itself.
+func (c *Client) Run() error {
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		c.PingLoop()
+	}()
+	defer func() { c.Close(); <-pingDone }()
+	return c.ReadLoop()
 }
 
 func (c *Client) ReadLoop() error {
@@ -229,6 +260,8 @@ func (c *Client) ReadLoop() error {
 func (c *Client) PingLoop() {
 	select {
 	case <-c.joined:
+	case <-c.done:
+		return
 	case <-time.After(30 * time.Second):
 		return
 	}
@@ -239,7 +272,12 @@ func (c *Client) PingLoop() {
 	t := time.NewTicker(period)
 	defer t.Stop()
 	var sentN int
-	for range t.C {
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
 		if c.closed.Load() {
 			return
 		}
@@ -258,12 +296,15 @@ func (c *Client) sendSignal(payload []byte) error {
 	if payload == nil {
 		return nil
 	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	c.wsMu.Lock()
-	defer c.wsMu.Unlock()
-	if c.ws == nil {
+	ws := c.ws
+	c.wsMu.Unlock()
+	if ws == nil || c.closed.Load() {
 		return fmt.Errorf("ws not connected")
 	}
-	return c.ws.WriteMessage(c.codec.MessageType(), payload)
+	return ws.WriteMessage(c.codec.MessageType(), payload)
 }
 
 func (c *Client) iceServersAsWebRTC() []webrtc.ICEServer {

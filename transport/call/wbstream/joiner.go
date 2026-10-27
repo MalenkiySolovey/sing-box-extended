@@ -183,7 +183,7 @@ func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, t
 	case <-sess.Done():
 	case <-j.stopCh:
 	}
-	sess.Close()
+	sess.closeAndWait()
 	j.clearSession(sess)
 	return nil
 }

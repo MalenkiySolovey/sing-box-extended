@@ -9,6 +9,7 @@ import (
 
 	"github.com/sagernet/sing-box/transport/call/livekit"
 	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 
 	"github.com/kulikov0/headless-client/webrtc"
 )
@@ -20,6 +21,7 @@ type SignalConfig struct {
 	Logger                 logger.ContextLogger
 	ConfigureSettingEngine func(*webrtc.SettingEngine)
 	NetDialContext         func(ctx context.Context, network, addr string) (net.Conn, error)
+	Dialer                 N.Dialer
 	OnConnected            func()
 	OnDataChannel          func(*webrtc.DataChannel)
 	OnTrack                func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
@@ -62,6 +64,7 @@ func ConnectSignal(cfg SignalConfig) (*Signal, error) {
 		Logger:                 log,
 		ConfigureSettingEngine: cfg.ConfigureSettingEngine,
 		NetDialContext:         cfg.NetDialContext,
+		Dialer:                 cfg.Dialer,
 	})
 	if err != nil {
 		return nil, err
@@ -81,11 +84,10 @@ func ConnectSignal(cfg SignalConfig) (*Signal, error) {
 	if err := s.lk.Connect(); err != nil {
 		return nil, err
 	}
-	go s.lk.PingLoop()
 	return s, nil
 }
 
-func (s *Signal) Run() error { return s.lk.ReadLoop() }
+func (s *Signal) Run() error { return s.lk.Run() }
 
 func (s *Signal) Close() { s.lk.Close() }
 

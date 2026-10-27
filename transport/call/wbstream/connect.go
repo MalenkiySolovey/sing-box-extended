@@ -93,11 +93,11 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 	case firstTun = <-tunCh:
 	case <-ctx.Done():
 		common.RetireServingTransports(dialer)
-		sess.Close()
+		sess.closeAndWait()
 		return nil, "", ctx.Err()
 	case <-time.After(60 * time.Second):
 		common.RetireServingTransports(dialer)
-		sess.Close()
+		sess.closeAndWait()
 		return nil, "", fmt.Errorf("wbstream: creator tunnel timed out")
 	}
 
@@ -147,14 +147,14 @@ func creatorReconnectLoop(
 	logger logger.ContextLogger,
 ) {
 	current := sess
-	defer func() { current.Close() }()
+	defer func() { current.closeAndWait() }()
 	for {
 		select {
 		case <-current.Done():
 		case <-ctx.Done():
 			return
 		}
-		current.Close()
+		current.closeAndWait()
 		if relay.IsClosed() {
 			return
 		}
@@ -195,11 +195,11 @@ func creatorReconnectLoop(
 			select {
 			case newTun = <-tunCh:
 			case <-ctx.Done():
-				newSess.Close()
+				newSess.closeAndWait()
 				return
 			case <-time.After(60 * time.Second):
 				logger.Warn("wbstream: rejoin tunnel timed out, retrying")
-				newSess.Close()
+				newSess.closeAndWait()
 				continue
 			}
 			current = newSess
