@@ -42,6 +42,11 @@ func RegisterOutbound(registry *outbound.Registry) {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MieruOutboundOptions) (adapter.Outbound, error) {
+	// Dry provider checks construct the outbound without starting it. Reject
+	// invalid options before runtime ownership or the save transaction begins.
+	if err := validateMieruOptions(options); err != nil {
+		return nil, err
+	}
 	outboundDialer, err := dialer.NewWithOptions(dialer.Options{
 		Context:          ctx,
 		Options:          options.DialerOptions,
@@ -307,21 +312,21 @@ func validateMieruOptions(options option.MieruOutboundOptions) error {
 	}
 	if options.Multiplexing != "" {
 		if _, ok := mierupb.MultiplexingLevel_value[options.Multiplexing]; !ok {
-			return fmt.Errorf("invalid multiplexing level: %s", options.Multiplexing)
+			return fmt.Errorf("invalid multiplexing level")
 		}
 	}
 	if options.HandshakeMode != "" {
 		if _, ok := mierupb.HandshakeMode_value[options.HandshakeMode]; !ok {
-			return fmt.Errorf("invalid handshake mode: %s", options.HandshakeMode)
+			return fmt.Errorf("invalid handshake mode")
 		}
 	}
 	if options.TrafficPattern != "" {
 		trafficPattern, err := mierutp.Decode(options.TrafficPattern)
 		if err != nil {
-			return fmt.Errorf("failed to decode traffic pattern %q: %w", options.TrafficPattern, err)
+			return fmt.Errorf("failed to decode traffic pattern")
 		}
 		if err := mierutp.Validate(trafficPattern); err != nil {
-			return fmt.Errorf("invalid traffic pattern %q: %w", options.TrafficPattern, err)
+			return fmt.Errorf("invalid traffic pattern")
 		}
 	}
 	return nil
