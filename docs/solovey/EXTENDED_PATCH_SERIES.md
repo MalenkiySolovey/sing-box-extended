@@ -36,4 +36,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0027 | Keep connected failover sessions alive after completed dial cancellation; retain serving Scope retirement | ./protocol/failover -run TestFailover(NativeSession|CanceledHandshake) |
 
+| EXTENDED-0028 | Own Call inbound worker, late bridge admission and pending platform HTTP/TLS transports through serving Scope | ./protocol/call -run TestCallInbound |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
