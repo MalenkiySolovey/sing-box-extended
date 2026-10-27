@@ -38,4 +38,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0028 | Own Call inbound worker, late bridge admission and pending platform HTTP/TLS transports through serving Scope | ./protocol/call -run TestCallInbound |
 
+| EXTENDED-0029 | Preserve selected ResolveDialer query options through Call serving network ownership without inventing resolver support | ./protocol/call -run TestCall |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
