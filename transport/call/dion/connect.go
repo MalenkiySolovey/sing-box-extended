@@ -3,6 +3,7 @@ package dion
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -14,6 +15,13 @@ import (
 )
 
 func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	retained := false
+	defer func() {
+		if !retained {
+			cancel()
+		}
+	}()
 	auth, err := NewSession(dialer)
 	if err != nil {
 		return nil, "", fmt.Errorf("dion: new session: %w", err)
@@ -48,6 +56,7 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 	}
 	relayCh := make(chan *tunnel.RelayBridge, 1)
 	var activeRelay *tunnel.RelayBridge
+	var relayMu sync.Mutex
 	call := NewCall(CallConfig{
 		Auth:        auth,
 		Event:       event,
@@ -59,38 +68,71 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 		Role:        RoleCreator,
 	})
 	call.OnConnected = func(tun tunnel.DataTunnel) {
-		if activeRelay != nil {
-			activeRelay.Reset()
-		}
 		bridgeReadBuf := common.VP8BufSize
 		if _, ok := tun.(*rtc.DCTunnel); ok {
 			bridgeReadBuf = readBuf
 		}
-		activeRelay = tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
-		activeRelay.MarkReady()
+		relayMu.Lock()
+		if ctx.Err() != nil {
+			relayMu.Unlock()
+			return
+		}
+		active := activeRelay
+		if active == nil {
+			active = tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
+			activeRelay = active
+			relayMu.Unlock()
+		} else {
+			relayMu.Unlock()
+			active.SwapTunnel(tun)
+		}
+		active.MarkReady()
 		select {
-		case relayCh <- activeRelay:
+		case relayCh <- active:
 		default:
 		}
 	}
 	call.OnPeerRestart = func() {
-		if activeRelay != nil {
-			activeRelay.Reset()
+		relayMu.Lock()
+		active := activeRelay
+		relayMu.Unlock()
+		if active != nil && ctx.Err() == nil {
+			active.Reset()
 		}
 	}
+	done := make(chan struct{})
+	startErr := make(chan error, 1)
 	go func() {
+		defer close(done)
 		if err := call.Start(); err != nil {
-			logger.Error(fmt.Sprintf("dion: call start failed: %v", err))
+			startErr <- err
 		}
 	}()
+	stop := func() {
+		cancel()
+		common.RetireServingTransports(dialer)
+		<-done
+		call.Close()
+		relayMu.Lock()
+		active := activeRelay
+		relayMu.Unlock()
+		if active != nil {
+			active.Close()
+		}
+	}
 	select {
 	case relay := <-relayCh:
+		relay.SetOwnerCleanup(stop)
+		retained = true
 		return relay, joinLink, nil
+	case err := <-startErr:
+		stop()
+		return nil, "", fmt.Errorf("dion: call start: %w", err)
 	case <-ctx.Done():
-		call.Close()
+		stop()
 		return nil, "", ctx.Err()
 	case <-time.After(60 * time.Second):
-		call.Close()
+		stop()
 		return nil, "", fmt.Errorf("dion: creator tunnel timed out")
 	}
 }

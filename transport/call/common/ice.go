@@ -1,7 +1,6 @@
 package common
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -70,6 +69,10 @@ func ResolveICEHosts(urls []string, dnsRouter adapter.DNSRouter, d N.Dialer, log
 	if dnsRouter == nil {
 		return out
 	}
+	resolver, ok := d.(dialer.ResolveDialer)
+	if !ok {
+		return out
+	}
 	resolved := make(map[string]string)
 	for i, iceURL := range out {
 		fixed := FixICEURL(iceURL)
@@ -80,9 +83,13 @@ func ResolveICEHosts(urls []string, dnsRouter adapter.DNSRouter, d N.Dialer, log
 		}
 		ip, ok := resolved[host]
 		if !ok {
-			addrs, err := dnsRouter.Lookup(context.Background(), host, d.(dialer.ResolveDialer).QueryOptions())
+			addrs, err := dnsRouter.Lookup(ContextForDialer(d), host, resolver.QueryOptions())
 			if err != nil {
 				logger.Warn(fmt.Sprintf("%s: resolve ICE host %s failed: %s", logPrefix, MaskAddr(host), MaskError(err)))
+				out[i] = fixed
+				continue
+			}
+			if len(addrs) == 0 {
 				out[i] = fixed
 				continue
 			}

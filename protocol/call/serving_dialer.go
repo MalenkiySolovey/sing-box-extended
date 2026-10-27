@@ -17,16 +17,20 @@ import (
 type servingDialer struct {
 	N.Dialer
 	ctx         context.Context
+	cancel      context.CancelFunc
 	access      sync.Mutex
 	closed      bool
 	connections map[io.Closer]struct{}
 }
 
 func newServingDialer(ctx context.Context, upstream N.Dialer) *servingDialer {
-	return &servingDialer{Dialer: upstream, ctx: ctx, connections: make(map[io.Closer]struct{})}
+	ctx, cancel := context.WithCancel(ctx)
+	return &servingDialer{Dialer: upstream, ctx: ctx, cancel: cancel, connections: make(map[io.Closer]struct{})}
 }
 
 func (d *servingDialer) Context() context.Context { return d.ctx }
+
+func (d *servingDialer) CloseServingTransports() { d.Close() }
 
 // ICE and platform DNS paths inspect ResolveDialer. Preserve that contract only
 // when the selected upstream actually implements it; keep network I/O owned.
@@ -116,6 +120,7 @@ func (d *servingDialer) ListenPacket(ctx context.Context, destination M.Socksadd
 }
 
 func (d *servingDialer) Close() {
+	d.cancel()
 	d.access.Lock()
 	d.closed = true
 	connections := make([]io.Closer, 0, len(d.connections))

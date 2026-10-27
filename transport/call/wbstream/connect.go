@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -15,6 +16,13 @@ import (
 )
 
 func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	retained := false
+	defer func() {
+		if !retained {
+			cancel()
+		}
+	}()
 	deviceID := common.CookieValue(cookieStr, "__wb_device_id")
 	if deviceID == "" {
 		return nil, "", fmt.Errorf("wbstream: cookies missing __wb_device_id")
@@ -43,6 +51,7 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 	}
 
 	var relay *tunnel.RelayBridge
+	var relayMu sync.Mutex
 	joinSession := func(token, access, server string) (*Session, <-chan tunnel.DataTunnel) {
 		tunCh := make(chan tunnel.DataTunnel, 1)
 		sess := NewSession(SessionConfig{
@@ -64,8 +73,11 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 			}
 		}
 		sess.OnPeerRestart = func() {
-			if relay != nil {
-				relay.Reset()
+			relayMu.Lock()
+			active := relay
+			relayMu.Unlock()
+			if active != nil && ctx.Err() == nil {
+				active.Reset()
 			}
 		}
 		return sess, tunCh
@@ -73,22 +85,34 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 
 	sess, tunCh := joinSession(roomToken, accessToken, serverURL)
 	if err := sess.Start(); err != nil {
+		sess.Close()
 		return nil, "", fmt.Errorf("wbstream: session start: %w", err)
 	}
 	var firstTun tunnel.DataTunnel
 	select {
 	case firstTun = <-tunCh:
 	case <-ctx.Done():
+		common.RetireServingTransports(dialer)
 		sess.Close()
 		return nil, "", ctx.Err()
 	case <-time.After(60 * time.Second):
+		common.RetireServingTransports(dialer)
 		sess.Close()
 		return nil, "", fmt.Errorf("wbstream: creator tunnel timed out")
 	}
 
-	relay = tunnel.NewRelayBridge(firstTun, "creator", bridgeReadBufFor(firstTun, readBuf), dialer, logger)
-	go creatorReconnectLoop(ctx, relay, sess, joinSession, httpClient, cookieHeader, bearer, deviceID, resolvedRoomID, readBuf, logger)
-	return relay, APIBase + "/room/" + resolvedRoomID, nil
+	active := tunnel.NewRelayBridge(firstTun, "creator", bridgeReadBufFor(firstTun, readBuf), dialer, logger)
+	relayMu.Lock()
+	relay = active
+	relayMu.Unlock()
+	done := make(chan struct{})
+	active.SetOwnerCleanup(func() { cancel(); common.RetireServingTransports(dialer); <-done })
+	go func() {
+		defer close(done)
+		creatorReconnectLoop(ctx, active, sess, joinSession, httpClient, cookieHeader, bearer, deviceID, resolvedRoomID, readBuf, logger)
+	}()
+	retained = true
+	return active, APIBase + "/room/" + resolvedRoomID, nil
 }
 
 func ConnectJoiner(ctx context.Context, roomID, displayName, mode string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
@@ -135,6 +159,7 @@ func creatorReconnectLoop(
 	logger logger.ContextLogger,
 ) {
 	current := sess
+	defer func() { current.Close() }()
 	for {
 		select {
 		case <-current.Done():
@@ -175,6 +200,7 @@ func creatorReconnectLoop(
 			}
 			newSess, tunCh := joinSession(roomToken, accessToken, serverURL)
 			if err := newSess.Start(); err != nil {
+				newSess.Close()
 				logger.Warn(fmt.Sprintf("wbstream: rejoin session start failed: %v, retrying", err))
 				continue
 			}

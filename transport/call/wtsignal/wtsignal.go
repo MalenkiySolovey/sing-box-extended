@@ -17,6 +17,8 @@ import (
 	"github.com/kulikov0/headless-client/quic"
 	"github.com/kulikov0/headless-client/quic/http3"
 	"github.com/kulikov0/headless-client/quic/quicvarint"
+	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 const (
@@ -52,6 +54,17 @@ type Conn struct {
 }
 
 func Dial(endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
+	return dial(context.Background(), nil, endpoint, serverName, resolvedIP, origin)
+}
+
+func DialContext(ctx context.Context, dialer N.Dialer, endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
+	if dialer == nil {
+		return nil, fmt.Errorf("wt: missing platform dialer")
+	}
+	return dial(ctx, dialer, endpoint, serverName, resolvedIP, origin)
+}
+
+func dial(ctx context.Context, dialer N.Dialer, endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
 	target, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
@@ -62,20 +75,44 @@ func Dial(endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
 	}
 	compress := target.Query().Get("compression") == "deflate-raw"
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
-	qconn, err := headless.ChromeWindows.DialQUIC(dialCtx, net.JoinHostPort(resolvedIP, port), headless.QUICOptions{
+	options := headless.QUICOptions{
 		Transport:          headless.QUICWebTransport,
 		ServerName:         serverName,
 		InsecureSkipVerify: true,
 		EnableDatagrams:    true,
 		KeepAlivePeriod:    keepAlivePeriod,
 		MaxIdleTimeout:     maxIdleTimeout,
-	})
+	}
+	var qconn *quic.Conn
+	var packet net.PacketConn
+	if dialer == nil {
+		qconn, err = headless.ChromeWindows.DialQUIC(dialCtx, net.JoinHostPort(resolvedIP, port), options)
+	} else {
+		destination := M.ParseSocksaddr(net.JoinHostPort(resolvedIP, port))
+		packet, err = dialer.ListenPacket(dialCtx, destination)
+		if err == nil {
+			tlsConfig, config := headless.ChromeWindows.QUICConfig(options)
+			qconn, err = quic.DialEarly(dialCtx, packet, destination.UDPAddr(), tlsConfig, config)
+		}
+	}
 	if err != nil {
+		if packet != nil {
+			_ = packet.Close()
+		}
 		return nil, fmt.Errorf("wt dial: %w", err)
 	}
+	stopServing := context.AfterFunc(ctx, func() { qconn.CloseWithError(0, "") })
+	stopDial := context.AfterFunc(dialCtx, func() { qconn.CloseWithError(0, "") })
+	defer stopDial()
+	context.AfterFunc(qconn.Context(), func() {
+		stopServing()
+		if packet != nil {
+			_ = packet.Close()
+		}
+	})
 
 	// The SFU advertises HTTP/3 datagrams but never negotiates them at the QUIC
 	// layer, and only EnableDatagrams feeds the check that closes the connection.
@@ -148,7 +185,7 @@ func Dial(endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
 
 	go watchSessionClose(requestStr, qconn)
 
-	stream, err := qconn.OpenStreamSync(context.Background())
+	stream, err := qconn.OpenStreamSync(dialCtx)
 	if err != nil {
 		qconn.CloseWithError(0, "")
 		return nil, fmt.Errorf("wt open stream: %w", err)
@@ -171,7 +208,7 @@ func Dial(endpoint, serverName, resolvedIP, origin string) (*Conn, error) {
 
 func acceptStreams(qconn *quic.Conn, control *http3.RawClientConn) {
 	for {
-		stream, err := qconn.AcceptStream(context.Background())
+		stream, err := qconn.AcceptStream(qconn.Context())
 		if err != nil {
 			return
 		}
@@ -197,7 +234,7 @@ func acceptStreams(qconn *quic.Conn, control *http3.RawClientConn) {
 
 func acceptUniStreams(qconn *quic.Conn, control *http3.RawClientConn) {
 	for {
-		stream, err := qconn.AcceptUniStream(context.Background())
+		stream, err := qconn.AcceptUniStream(qconn.Context())
 		if err != nil {
 			return
 		}

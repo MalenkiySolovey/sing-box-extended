@@ -284,7 +284,7 @@ func (h *VKJoiner) resolveHost(host string) (string, error) {
 	if h.DNSRouter == nil || !hasRD {
 		return "", fmt.Errorf("no DNS router available to resolve %s", host)
 	}
-	addrs, err := h.DNSRouter.Lookup(context.Background(), host, rd.QueryOptions())
+	addrs, err := h.DNSRouter.Lookup(common.ContextForDialer(h.Dialer), host, rd.QueryOptions())
 	if err != nil {
 		return "", err
 	}
@@ -377,7 +377,7 @@ func (h *VKJoiner) connectSFU() {
 		"&appVersion=" + h.authParams.AppVersion +
 		"&version=" + h.authParams.ProtocolVersion +
 		"&device=browser&capabilities=" + capabilities + "&clientType=VK&tgt=join&compression=deflate-raw"
-	sfu, err := wtsignal.Dial(wtURL, hostname, resolvedIP, vkOrigin)
+	sfu, err := wtsignal.DialContext(common.ContextForDialer(h.Dialer), h.Dialer, wtURL, hostname, resolvedIP, vkOrigin)
 	if err != nil {
 		h.logger.Error(fmt.Sprintf("vk-joiner: WebTransport connect failed: %s", common.MaskError(err)))
 		return
