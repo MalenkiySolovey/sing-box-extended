@@ -17,6 +17,7 @@ import (
 )
 
 type ClientOptions struct {
+	Context   context.Context
 	Dialer    N.Dialer
 	TLSConfig tls.Config
 	Config    ProtocolConfig
@@ -32,17 +33,32 @@ type Client struct {
 	httpMaskMu     sync.Mutex
 	httpMaskClient *httpmask.TunnelClient
 	httpMaskKey    string
+
+	ctx       context.Context
+	cancel    context.CancelFunc
+	lifeMu    sync.Mutex
+	closed    bool
+	closeOnce sync.Once
+	pending   sync.WaitGroup
+	conns     map[*clientOwnedConn]struct{}
 }
 
 func NewClient(options ClientOptions) (*Client, error) {
+	parent := options.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	client := &Client{
 		dialer:    options.Dialer,
 		tlsConfig: options.TLSConfig,
 		baseConf:  options.Config,
+		ctx:       ctx, cancel: cancel, conns: make(map[*clientOwnedConn]struct{}),
 	}
 	if client.baseConf.SessionMuxEnabled() {
 		muxDialer, err := NewMultiplexDialer(client.dialMultiplexBase)
 		if err != nil {
+			cancel()
 			return nil, err
 		}
 		client.muxDialer.Store(muxDialer)
@@ -51,6 +67,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 }
 
 func (c *Client) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	if err := c.admit(); err != nil {
+		return nil, err
+	}
+	defer c.pending.Done()
 	cfg := c.baseConf
 	cfg.TargetAddress = destination.String()
 
@@ -59,7 +79,11 @@ func (c *Client) DialContext(ctx context.Context, network string, destination M.
 		if muxDialer == nil {
 			return nil, E.New("multiplex dialer is unavailable")
 		}
-		return muxDialer.Dial(ctx, cfg.TargetAddress)
+		conn, err := muxDialer.Dial(ctx, cfg.TargetAddress)
+		if err != nil {
+			return nil, err
+		}
+		return c.own(conn, false)
 	}
 
 	conn, err := c.dialAndHandshake(ctx, &cfg)
@@ -73,7 +97,7 @@ func (c *Client) DialContext(ctx context.Context, network string, destination M.
 			conn.Close()
 			return nil, E.Cause(err, "start uot")
 		}
-		return conn, nil
+		return c.own(conn, false)
 	default:
 		addrBuf, err := EncodeAddress(cfg.TargetAddress)
 		if err != nil {
@@ -84,24 +108,58 @@ func (c *Client) DialContext(ctx context.Context, network string, destination M.
 			conn.Close()
 			return nil, E.Cause(err, "send target address")
 		}
-		return conn, nil
+		return c.own(conn, false)
 	}
 }
 
 func (c *Client) Close() {
-	if muxDialer := c.muxDialer.Swap(nil); muxDialer != nil {
-		muxDialer.Close()
-	}
-	c.resetHTTPMaskClient()
+	c.closeOnce.Do(func() {
+		c.lifeMu.Lock()
+		c.closed = true
+		c.cancel()
+		conns := make([]*clientOwnedConn, 0, len(c.conns))
+		var streams []*clientOwnedConn
+		for conn := range c.conns {
+			if conn.transport {
+				conns = append(conns, conn)
+			} else {
+				streams = append(streams, conn)
+			}
+		}
+		c.lifeMu.Unlock()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		for _, conn := range streams {
+			_ = conn.Close()
+		}
+		if muxDialer := c.muxDialer.Swap(nil); muxDialer != nil {
+			muxDialer.Close()
+		}
+		c.resetHTTPMaskClient()
+	})
+	c.pending.Wait()
 }
 
 func (c *Client) ResetConnections() error {
+	if err := c.admit(); err != nil {
+		return err
+	}
+	defer c.pending.Done()
 	if c.baseConf.SessionMuxEnabled() {
 		muxDialer, err := NewMultiplexDialer(c.dialMultiplexBase)
 		if err != nil {
 			return err
 		}
-		if previous := c.muxDialer.Swap(muxDialer); previous != nil {
+		c.lifeMu.Lock()
+		if c.closed || c.ctx.Err() != nil {
+			c.lifeMu.Unlock()
+			muxDialer.Close()
+			return net.ErrClosed
+		}
+		previous := c.muxDialer.Swap(muxDialer)
+		c.lifeMu.Unlock()
+		if previous != nil {
 			previous.Close()
 		}
 	}
@@ -149,16 +207,17 @@ func (c *Client) dialAndHandshake(ctx context.Context, cfg *ProtocolConfig) (net
 		}
 	}
 	if conn == nil && err == nil {
-		conn, err = c.dialer.DialContext(ctx, N.NetworkTCP, M.ParseSocksaddr(cfg.ServerAddress))
+		conn, err = c.dialRaw(ctx, N.NetworkTCP, cfg.ServerAddress)
 	}
 	if err != nil {
 		return nil, E.Cause(err, "connect to ", cfg.ServerAddress)
 	}
 
 	if !handshakeDone {
+		raw := conn
 		conn, err = ClientHandshake(conn, &handshakeCfg)
 		if err != nil {
-			common.Close(conn)
+			common.Close(raw)
 			return nil, err
 		}
 	}
@@ -167,12 +226,34 @@ func (c *Client) dialAndHandshake(ctx context.Context, cfg *ProtocolConfig) (net
 }
 
 func (c *Client) dialMultiplexBase(ctx context.Context) (net.Conn, error) {
+	if err := c.admit(); err != nil {
+		return nil, err
+	}
+	defer c.pending.Done()
 	cfg := c.baseConf
 	return c.dialAndHandshake(ctx, &cfg)
 }
 
 func (c *Client) dialRaw(ctx context.Context, network, addr string) (net.Conn, error) {
-	return c.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+	if err := c.admit(); err != nil {
+		return nil, err
+	}
+	defer c.pending.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer stop()
+	defer cancel()
+	c.lifeMu.Lock()
+	closed := c.closed || c.ctx.Err() != nil
+	c.lifeMu.Unlock()
+	if closed {
+		return nil, net.ErrClosed
+	}
+	conn, err := c.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+	if err != nil {
+		return nil, err
+	}
+	return c.own(conn, true)
 }
 
 func (c *Client) dialHTTPMaskTunnel(ctx context.Context, cfg *ProtocolConfig, upgrade func(net.Conn) (net.Conn, error)) (net.Conn, error) {
@@ -224,27 +305,39 @@ func (c *Client) getOrCreateHTTPMaskClient(cfg *ProtocolConfig) (*httpmask.Tunne
 		return nil, err
 	}
 
-	c.httpMaskMu.Lock()
-	defer c.httpMaskMu.Unlock()
-	if c.httpMaskClient != nil && c.httpMaskKey == key {
+	c.lifeMu.Lock()
+	if c.closed || c.ctx.Err() != nil {
+		c.lifeMu.Unlock()
 		client.CloseIdleConnections()
-		return c.httpMaskClient, nil
+		return nil, net.ErrClosed
 	}
-	if c.httpMaskClient != nil {
-		c.httpMaskClient.CloseIdleConnections()
+	c.httpMaskMu.Lock()
+	if c.httpMaskClient != nil && c.httpMaskKey == key {
+		selected := c.httpMaskClient
+		c.httpMaskMu.Unlock()
+		c.lifeMu.Unlock()
+		client.CloseIdleConnections()
+		return selected, nil
 	}
+	previous := c.httpMaskClient
 	c.httpMaskClient = client
 	c.httpMaskKey = key
+	c.httpMaskMu.Unlock()
+	c.lifeMu.Unlock()
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
 	return client, nil
 }
 
 func (c *Client) resetHTTPMaskClient() {
 	c.httpMaskMu.Lock()
-	defer c.httpMaskMu.Unlock()
-	if c.httpMaskClient != nil {
-		c.httpMaskClient.CloseIdleConnections()
-		c.httpMaskClient = nil
-		c.httpMaskKey = ""
+	previous := c.httpMaskClient
+	c.httpMaskClient = nil
+	c.httpMaskKey = ""
+	c.httpMaskMu.Unlock()
+	if previous != nil {
+		previous.CloseIdleConnections()
 	}
 }
 

@@ -114,6 +114,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 
 	client, err := sudoku.NewClient(sudoku.ClientOptions{
+		Context:   ctx,
 		Dialer:    outboundDialer,
 		TLSConfig: tlsConfig,
 		Config:    baseConf,
