@@ -31,6 +31,15 @@ type Outbound struct {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelOutboundOptions) (adapter.Outbound, error) {
+	if options.Server == "" || options.ServerPort == 0 {
+		return nil, E.New("TrustTunnel server address and port are required")
+	}
+	if options.Username == "" || options.Password == "" {
+		return nil, E.New("TrustTunnel username and password are required")
+	}
+	if mux := options.Multiplex; mux != nil && (mux.MaxConnections < 0 || mux.MinStreams < 0 || mux.MaxStreams < 0) {
+		return nil, E.New("TrustTunnel multiplex limits must be nonnegative")
+	}
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
 	}
