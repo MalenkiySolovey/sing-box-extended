@@ -3,6 +3,7 @@ package call
 import (
 	"context"
 	"net"
+	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -26,12 +27,18 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	ctx     context.Context
-	router  adapter.ConnectionRouterEx
-	logger  logger.ContextLogger
-	options option.CallInboundOptions
-	dialer  N.Dialer
-	bridge  *call.Bridge
+	ctx         context.Context
+	router      adapter.ConnectionRouterEx
+	logger      logger.ContextLogger
+	options     option.CallInboundOptions
+	dialer      N.Dialer
+	network     *servingDialer
+	bridge      *call.Bridge
+	access      sync.Mutex
+	initialized bool
+	closed      bool
+	done        chan struct{}
+	connect     func(context.Context, call.Config) (*call.Bridge, error)
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallInboundOptions) (adapter.Inbound, error) {
@@ -49,26 +56,53 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		logger:  logger,
 		options: options,
 		dialer:  outboundDialer,
+		connect: call.Connect,
 	}, nil
 }
 
 func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
-	if stage != adapter.StartStatePostStart {
-		return nil
+	h.access.Lock()
+	defer h.access.Unlock()
+	if h.closed || scope.Context().Err() != nil {
+		return net.ErrClosed
 	}
-	scope.Add(func() error {
-		if h.bridge == nil {
-			return nil
+	if stage == adapter.StartStateInitialize && !h.initialized {
+		h.ctx = scope.Context()
+		h.network = newServingDialer(h.ctx, h.dialer)
+		h.initialized = true
+		scope.Add(h.close)
+	}
+	if stage == adapter.StartStatePostStart && h.done == nil {
+		if !h.initialized {
+			return E.New("call inbound not initialized")
 		}
-		return h.bridge.Close()
-	})
-	go h.run()
+		h.done = make(chan struct{})
+		go func() { defer close(h.done); h.run() }()
+	}
 	return nil
+}
+
+func (h *Inbound) close() error {
+	h.access.Lock()
+	h.closed = true
+	bridge, done, network := h.bridge, h.done, h.network
+	h.access.Unlock()
+	if network != nil {
+		network.Close()
+	}
+	var err error
+	if bridge != nil {
+		err = bridge.Close()
+	}
+	if done != nil {
+		<-done
+	}
+	return err
 }
 
 func (h *Inbound) run() {
 	dnsRouter := service.FromContext[adapter.DNSRouter](h.ctx)
-	bridge, err := call.Connect(h.ctx, call.Config{
+	bridge, err := h.connect(h.ctx, call.Config{
 		Platform:     h.options.Platform,
 		Mode:         h.options.Mode,
 		JoinLink:     h.options.JoinLink,
@@ -77,7 +111,7 @@ func (h *Inbound) run() {
 		Password:     h.options.Password,
 		ReadBuffer:   h.options.ReadBuffer,
 		Role:         call.RoleCreator,
-		Dialer:       h.dialer,
+		Dialer:       h.network,
 		DNSRouter:    dnsRouter,
 		Logger:       h.logger,
 	})
@@ -85,7 +119,14 @@ func (h *Inbound) run() {
 		h.logger.ErrorContext(h.ctx, err)
 		return
 	}
+	h.access.Lock()
+	if h.closed || h.ctx.Err() != nil {
+		h.access.Unlock()
+		_ = bridge.Close()
+		return
+	}
 	h.bridge = bridge
+	h.access.Unlock()
 	bridge.SetAcceptHandler(func(conn net.Conn, destination string) {
 		h.handleConnection(conn, M.ParseSocksaddr(destination))
 	})
@@ -95,6 +136,10 @@ func (h *Inbound) run() {
 }
 
 func (h *Inbound) handleConnection(conn net.Conn, destination M.Socksaddr) {
+	if h.ctx.Err() != nil {
+		_ = conn.Close()
+		return
+	}
 	ctx := log.ContextWithNewID(h.ctx)
 	var metadata adapter.InboundContext
 	metadata.Inbound = h.Tag()
@@ -108,6 +153,10 @@ func (h *Inbound) handleConnection(conn net.Conn, destination M.Socksaddr) {
 }
 
 func (h *Inbound) handlePacketConnection(conn N.PacketConn, destination M.Socksaddr) {
+	if h.ctx.Err() != nil {
+		_ = conn.Close()
+		return
+	}
 	ctx := log.ContextWithNewID(h.ctx)
 	var metadata adapter.InboundContext
 	metadata.Inbound = h.Tag()
