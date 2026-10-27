@@ -66,4 +66,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0043 | Own pending Sudoku dials, raw transports and returned streams; cancel/join admitted work and prevent retired multiplex or HTTP-mask publication | ./transport/sudoku ./protocol/sudoku -run TestSudoku\|TestClient |
 
+| EXTENDED-0044 | Preserve native CloseRead/CloseWrite delegation and errors through the Sudoku client lifetime wrapper; half-close retains ownership until full retirement | ./transport/sudoku ./protocol/sudoku -run TestSudoku\|TestClient |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
