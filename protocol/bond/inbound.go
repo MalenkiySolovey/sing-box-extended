@@ -3,6 +3,7 @@ package bond
 import (
 	"context"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -113,6 +114,10 @@ func (h *Inbound) References() []string {
 	}
 	return references
 }
+
+// Inbounds exposes the actual Scope-owned members for runtime inspection and
+// protocol-specific controls. Callers cannot replace the serving member list.
+func (h *Inbound) Inbounds() []adapter.Inbound { return slices.Clone(h.inbounds) }
 
 func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) (retErr error) {
 	owned := &inboundConn{Conn: conn, inbound: h, onClose: onClose}
