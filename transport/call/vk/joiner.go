@@ -130,13 +130,13 @@ func NewVKJoiner(logger logger.ContextLogger, pcConfig common.PeerConnectionConf
 func (h *VKJoiner) RunWithParams(jsonParams string) {
 	var params VKAuthParams
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
-		h.logger.Error(fmt.Sprintf("vk-joiner: failed to parse auth params: %v", err))
+		h.logger.Error(fmt.Sprintf("vk-joiner: failed to parse auth params: %v", common.MaskError(err)))
 		return
 	}
 	h.authParams = &params
 	obf, err := tunnel.NewTunnelObfuscator(tunnel.DeriveSecretFromJoinLink(params.JoinLink))
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("vk-joiner: obfuscator init failed: %v", err))
+		h.logger.Error(fmt.Sprintf("vk-joiner: obfuscator init failed: %v", common.MaskError(err)))
 		return
 	}
 	h.obf = obf
@@ -144,12 +144,12 @@ func (h *VKJoiner) RunWithParams(jsonParams string) {
 	h.vp8Batch = params.VP8Batch
 	// h.dualTrack = params.DualTrack // temporarily disabled for VK joiners
 	h.logger.Debug("vk-joiner: auth params received")
-	h.logger.Debug(fmt.Sprintf("vk-joiner: obf key-source=%q localEpoch=0x%08x", params.JoinLink, obf.LocalEpoch()))
+	h.logger.Debug(fmt.Sprintf("vk-joiner: obf localEpoch=0x%08x", obf.LocalEpoch()))
 	h.logger.Debug(fmt.Sprintf("vk-joiner:   appVersion=%s protocolVersion=%s vp8Fps=%d vp8Batch=%d",
 		params.AppVersion, params.ProtocolVersion, params.VP8FPS, params.VP8Batch))
 	h.logger.Info("vk-joiner: connecting")
 	if err := h.runOnce(); err != nil {
-		h.logger.Error(fmt.Sprintf("vk-joiner: %v", err))
+		h.logger.Error(fmt.Sprintf("vk-joiner: %v", common.MaskError(err)))
 		return
 	}
 	for {
@@ -171,10 +171,10 @@ func (h *VKJoiner) RunWithParams(jsonParams string) {
 		h.logger.Info(fmt.Sprintf("vk-joiner: reconnect attempt #%d", attempt))
 		if err := h.runOnce(); err != nil {
 			if _, ok := errors.AsType[*vkAuthRottenError](err); ok {
-				h.logger.Error(fmt.Sprintf("vk-joiner: %v, surrendering", err))
+				h.logger.Error(fmt.Sprintf("vk-joiner: %v, surrendering", common.MaskError(err)))
 				return
 			}
-			h.logger.Warn(fmt.Sprintf("vk-joiner: %v, will retry", err))
+			h.logger.Warn(fmt.Sprintf("vk-joiner: %v, will retry", common.MaskError(err)))
 		}
 	}
 }
@@ -554,7 +554,7 @@ func (h *VKJoiner) initPC() {
 		},
 	})
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("vk-joiner: failed to build webrtc api: %v", err))
+		h.logger.Error(fmt.Sprintf("vk-joiner: failed to build webrtc api: %v", common.MaskError(err)))
 		return
 	}
 
@@ -562,7 +562,7 @@ func (h *VKJoiner) initPC() {
 		ICEServers: iceServers,
 	})
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("vk-joiner: failed to create PC: %v", err))
+		h.logger.Error(fmt.Sprintf("vk-joiner: failed to create PC: %v", common.MaskError(err)))
 		return
 	}
 	h.pc = pc
@@ -577,7 +577,7 @@ func (h *VKJoiner) initPC() {
 		ID:         &dcID,
 	})
 	if err != nil {
-		h.logger.Warn(fmt.Sprintf("vk-joiner: could not create tunnel DC: %v", err))
+		h.logger.Warn(fmt.Sprintf("vk-joiner: could not create tunnel DC: %v", common.MaskError(err)))
 	} else {
 		h.dc = dc
 		dc.OnOpen(func() {
@@ -721,7 +721,7 @@ func (h *VKJoiner) onTransmittedData(data map[string]any) {
 			h.pendingICE = nil
 			answer, err := h.pc.CreateAnswer(nil)
 			if err != nil || h.remotePeerID == nil {
-				h.logger.Warn(fmt.Sprintf("vk-joiner: create answer failed: %v", err))
+				h.logger.Warn(fmt.Sprintf("vk-joiner: create answer failed: %v", common.MaskError(err)))
 				return
 			}
 			h.pc.SetLocalDescription(answer)

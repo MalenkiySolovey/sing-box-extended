@@ -1,13 +1,23 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"net/url"
 )
 
 func MaskError(err error) string {
 	if err == nil {
 		return ""
+	}
+	var requestError *url.Error
+	if errors.As(err, &requestError) {
+		// Request URLs and nested server errors can carry room keys or tokens.
+		if requestError.Timeout() {
+			return requestError.Op + " request timed out"
+		}
+		return requestError.Op + " request failed"
 	}
 	if !MaskingEnabled {
 		return err.Error()

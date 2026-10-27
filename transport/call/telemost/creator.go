@@ -100,7 +100,7 @@ func getConnection(dialer N.Dialer, cookieStr, confURL string, cfg TMConfig) (*C
 		return nil, fmt.Errorf("get connection: %w", err)
 	}
 	if status != 200 {
-		return nil, fmt.Errorf("get connection: status %d: %s", status, string(r))
+		return nil, fmt.Errorf("get connection: status %d: %s", status, common.BodySnippet(r))
 	}
 	var conn struct {
 		PeerID       string `json:"peer_id"`
@@ -115,7 +115,7 @@ func getConnection(dialer N.Dialer, cookieStr, confURL string, cfg TMConfig) (*C
 	}
 	json.Unmarshal(r, &conn)
 	if conn.ClientConfig.MediaServerURL == "" {
-		return nil, fmt.Errorf("empty media_server_url: %s", string(r))
+		return nil, fmt.Errorf("empty media_server_url: %s", common.BodySnippet(r))
 	}
 	return &ConnInfo{
 		RoomID:              conn.RoomID,
@@ -133,14 +133,14 @@ func joinExistingConference(dialer N.Dialer, cookieStr, conferenceURI string, cf
 	if conferenceURI == "" {
 		return nil, fmt.Errorf("empty -tm-link")
 	}
-	logger.Info(fmt.Sprintf("[auth] Joining existing conference: %s", conferenceURI))
+	logger.Info("[auth] Joining existing conference")
 	info, err := getConnection(dialer, cookieStr, url.QueryEscape(conferenceURI), cfg)
 	if err != nil {
 		return nil, err
 	}
 	info.ConferenceURI = conferenceURI
-	logger.Debug(fmt.Sprintf("[auth] peer_id=%s room_id=%s", info.PeerID, info.RoomID))
-	logger.Debug(fmt.Sprintf("[auth] media_server=%s", info.MediaServerURL))
+	logger.Debug("[auth] peer and room identity received")
+	logger.Debug("[auth] private media endpoint received")
 	return info, nil
 }
 
@@ -152,24 +152,24 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr string, cfg TMConfig, logger l
 		return nil, fmt.Errorf("create conference: %w", err)
 	}
 	if status != 200 && status != 201 {
-		return nil, fmt.Errorf("create conference: status %d: %s", status, string(r))
+		return nil, fmt.Errorf("create conference: status %d: %s", status, common.BodySnippet(r))
 	}
 	var conf struct {
 		URI string `json:"uri"`
 	}
 	json.Unmarshal(r, &conf)
 	if conf.URI == "" {
-		return nil, fmt.Errorf("empty conference URI: %s", string(r))
+		return nil, fmt.Errorf("empty conference URI: %s", common.BodySnippet(r))
 	}
-	logger.Info(fmt.Sprintf("[auth] Conference: %s", conf.URI))
+	logger.Info("[auth] Conference created")
 	logger.Debug("[auth] Getting connection...")
 	info, err := getConnection(dialer, cookieStr, url.QueryEscape(conf.URI), cfg)
 	if err != nil {
 		return nil, err
 	}
 	info.ConferenceURI = conf.URI
-	logger.Debug(fmt.Sprintf("[auth] peer_id=%s room_id=%s", info.PeerID, info.RoomID))
-	logger.Debug(fmt.Sprintf("[auth] media_server=%s", info.MediaServerURL))
+	logger.Debug("[auth] peer and room identity received")
+	logger.Debug("[auth] private media endpoint received")
 	return info, nil
 }
 
@@ -216,7 +216,7 @@ func (b *Bridge) sendHello() {
 func (b *Bridge) sendPubOffer() {
 	offer, err := b.relay.CreatePubOffer()
 	if err != nil {
-		b.logger.Warn(fmt.Sprintf("[tm-ws] pub offer failed: %v", err))
+		b.logger.Warn(fmt.Sprintf("[tm-ws] pub offer failed: %v", common.MaskError(err)))
 		return
 	}
 	b.sendPublisherOffer(offer, false)
@@ -250,14 +250,14 @@ func (b *Bridge) enableScreenshare() {
 	b.shareEnabled = true
 	b.logger.Debug("[ss] enabling screenshare: describe DISPLAY_VIDEO -> updateMe -> offer")
 	if err := b.relay.AddSharingDataChannel(); err != nil {
-		b.logger.Warn(fmt.Sprintf("[ss] AddSharingDataChannel: %v", err))
+		b.logger.Warn(fmt.Sprintf("[ss] AddSharingDataChannel: %v", common.MaskError(err)))
 		return
 	}
 	b.wsSend(UpdatePublisherSharingTrackMessage("Screen"))
 	b.wsSend(UpdateMeMessage(b.selfName, true, true))
 	offer, err := b.relay.CreatePubRenegotiate()
 	if err != nil {
-		b.logger.Warn(fmt.Sprintf("[ss] enable renegotiate failed: %v", err))
+		b.logger.Warn(fmt.Sprintf("[ss] enable renegotiate failed: %v", common.MaskError(err)))
 		return
 	}
 	b.sendPublisherOffer(offer, true)
@@ -275,7 +275,7 @@ func (b *Bridge) disableScreenshare() {
 	b.relay.RemoveSharingDataChannel()
 	offer, err := b.relay.CreatePubRenegotiate()
 	if err != nil {
-		b.logger.Warn(fmt.Sprintf("[ss] disable renegotiate failed: %v", err))
+		b.logger.Warn(fmt.Sprintf("[ss] disable renegotiate failed: %v", common.MaskError(err)))
 		return
 	}
 	b.sendPublisherOffer(offer, false)
@@ -342,7 +342,7 @@ func (b *Bridge) handleMessage(raw []byte, poll func()) {
 		sdp, _ := paMap["sdp"].(string)
 		b.logger.Debug(fmt.Sprintf("[tm-ws] <- publisherSdpAnswer %d bytes", len(sdp)))
 		if err := b.relay.SetPubAnswer(sdp); err != nil {
-			b.logger.Warn(fmt.Sprintf("[tm-ws]    error: %v", err))
+			b.logger.Warn(fmt.Sprintf("[tm-ws]    error: %v", common.MaskError(err)))
 			return
 		}
 		b.sendInitBundle()
@@ -357,7 +357,7 @@ func (b *Bridge) handleMessage(raw []byte, poll func()) {
 		b.ack(uid)
 		answer, err := b.relay.SetSubOffer(sdp)
 		if err != nil {
-			b.logger.Warn(fmt.Sprintf("[tm-ws]    error: %v", err))
+			b.logger.Warn(fmt.Sprintf("[tm-ws]    error: %v", common.MaskError(err)))
 			return
 		}
 		b.logger.Debug(fmt.Sprintf("[tm-ws] -> subscriberSdpAnswer pcSeq=%d", b.subSeq))
@@ -662,7 +662,7 @@ func (b *Bridge) kickPeer(peerID string) error {
 		return err
 	}
 	if status >= 400 {
-		return fmt.Errorf("kick %s status %d: %s", peerID, status, string(body))
+		return fmt.Errorf("kick %s status %d: %s", peerID, status, common.BodySnippet(body))
 	}
 	return nil
 }
@@ -701,7 +701,7 @@ func (b *Bridge) pollAndAdmit(ctx context.Context) {
 	for pid, name := range toKick {
 		b.logger.Debug(fmt.Sprintf("[tm-ws] Kicking %s (%s) for one-to-one", name, pid))
 		if err := b.kickPeer(pid); err != nil {
-			b.logger.Warn(fmt.Sprintf("[tm-ws] kick failed: %v", err))
+			b.logger.Warn(fmt.Sprintf("[tm-ws] kick failed: %v", common.MaskError(err)))
 			b.mu.Lock()
 			delete(b.pendingKicks, pid)
 			b.mu.Unlock()
@@ -733,7 +733,7 @@ func (b *Bridge) initRelay() {
 	relay.readBufSize = b.readBuf
 	obf, err := tunnel.NewTunnelObfuscator(tunnel.DeriveSecretFromJoinLink(b.connInfo.ConferenceURI))
 	if err != nil {
-		b.logger.Fatal(fmt.Sprintf("[relay] obfuscator init failed: %v", err))
+		b.logger.Fatal(fmt.Sprintf("[relay] obfuscator init failed: %v", common.MaskError(err)))
 	}
 	relay.SetObfuscator(obf)
 	b.logger.Debug(fmt.Sprintf("[relay] obfuscator localEpoch=0x%08x", obf.LocalEpoch()))
@@ -786,7 +786,7 @@ func (b *Bridge) initRelay() {
 		b.sendICE(cand, "SUBSCRIBER", b.subSeq)
 	}
 	if err := relay.Init(b.connInfo.ICEServers); err != nil {
-		b.logger.Fatal(fmt.Sprintf("[relay] init failed: %v", err))
+		b.logger.Fatal(fmt.Sprintf("[relay] init failed: %v", common.MaskError(err)))
 	}
 	b.relay = relay
 }
@@ -862,7 +862,7 @@ func (b *Bridge) Run(ctx context.Context) {
 				interval = 30
 			}
 			if err := b.requestStates(); err != nil {
-				b.logger.Debug(fmt.Sprintf("[tm-state] initial request-states: %v", err))
+				b.logger.Debug(fmt.Sprintf("[tm-state] initial request-states: %v", common.MaskError(err)))
 			}
 			ticker := time.NewTicker(time.Duration(interval) * time.Second)
 			defer ticker.Stop()
@@ -874,7 +874,7 @@ func (b *Bridge) Run(ctx context.Context) {
 					return
 				case <-ticker.C:
 					if err := b.requestStates(); err != nil {
-						b.logger.Debug(fmt.Sprintf("[tm-state] request-states: %v", err))
+						b.logger.Debug(fmt.Sprintf("[tm-state] request-states: %v", common.MaskError(err)))
 					}
 				}
 			}
@@ -902,7 +902,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		}
 		newConn, err := getConnection(b.dialer, b.cookieStr, url.QueryEscape(b.connInfo.ConferenceURI), b.config)
 		if err != nil {
-			b.logger.Warn(fmt.Sprintf("[rejoin] Failed: %v, retrying in 5s...", err))
+			b.logger.Warn(fmt.Sprintf("[rejoin] Failed: %v, retrying in 5s...", common.MaskError(err)))
 			if !common.WaitContext(ctx, 5*time.Second) {
 				return
 			}

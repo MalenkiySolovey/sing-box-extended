@@ -64,7 +64,7 @@ func readScreenDataChannel(dc *webrtc.DataChannel, handler func([]byte), logger 
 		var raw datachannel.ReadWriteCloser
 		raw, err := dc.Detach()
 		if err != nil {
-			logger.Warn(fmt.Sprintf("[vk-joiner] screen DC detach failed, using OnMessage: %v", err))
+			logger.Warn(fmt.Sprintf("[vk-joiner] screen DC detach failed, using OnMessage: %v", common.MaskError(err)))
 			dc.OnMessage(func(m webrtc.DataChannelMessage) {
 				if !m.IsString && len(m.Data) > 0 {
 					frame := make([]byte, len(m.Data))
@@ -95,7 +95,7 @@ func attachScreenWriterDC(dc *webrtc.DataChannel, onRaw func(io.WriteCloser), lo
 	dc.OnOpen(func() {
 		raw, err := dc.Detach()
 		if err != nil {
-			logger.Warn(fmt.Sprintf("[vk-joiner] screen writer DC detach failed: %v", err))
+			logger.Warn(fmt.Sprintf("[vk-joiner] screen writer DC detach failed: %v", common.MaskError(err)))
 			return
 		}
 		logger.Debug("[vk-joiner] screen DC attached for writing")

@@ -74,9 +74,9 @@ func JoinExistingCall(dialer N.Dialer, cookieStr, vkLink string, cfg VKConfig, l
 	}
 	token := extractJoinToken(vkLink)
 	if token == "" {
-		return nil, fmt.Errorf("could not extract join token from %q", vkLink)
+		return nil, fmt.Errorf("could not extract join token")
 	}
-	logger.Info(fmt.Sprintf("[auth] Joining existing call token=%s", token))
+	logger.Info("[auth] Joining existing call")
 	resp, err := authAndJoin(dialer, cookieStr, token, cfg)
 	if err != nil {
 		return nil, err
@@ -109,7 +109,7 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr, peerId string, cfg VKConfig, 
 	json.Unmarshal(r, &tok)
 	vkToken := tok.Data.AccessToken
 	if vkToken == "" {
-		return nil, fmt.Errorf("empty VK token, response: %s", string(r))
+		return nil, fmt.Errorf("empty VK token, response: %s", common.BodySnippet(r))
 	}
 	logger.Info(fmt.Sprintf("[auth] Creating call peer_id=%s...", peerId))
 	r, err = httpPost(dialer, "https://api.vk.ru/method/calls.start",
@@ -130,13 +130,13 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr, peerId string, cfg VKConfig, 
 	json.Unmarshal(r, &call)
 	c := call.Response
 	if c.CallID == "" {
-		return nil, fmt.Errorf("empty call_id, response: %s", string(r))
+		return nil, fmt.Errorf("empty call_id, response: %s", common.BodySnippet(r))
 	}
 	if c.OKJoinLink == "" {
-		return nil, fmt.Errorf("empty ok_join_link, response: %s", string(r))
+		return nil, fmt.Errorf("empty ok_join_link, response: %s", common.BodySnippet(r))
 	}
 	logger.Debug(fmt.Sprintf("[auth] call_id: %s", c.CallID))
-	logger.Debug(fmt.Sprintf("[auth] join_link: %s", c.JoinLink))
+	logger.Debug("[auth] private join link received")
 	logger.Info("[auth] Joining conversation...")
 	resp, err := authAndJoin(dialer, cookieStr, c.OKJoinLink, cfg)
 	if err != nil {
@@ -184,7 +184,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	var tok vkTokenResponse
 	json.Unmarshal(r, &tok)
 	if tok.Data.AccessToken == "" {
-		return nil, fmt.Errorf("empty VK token, response: %s", string(r))
+		return nil, fmt.Errorf("empty VK token, response: %s", common.BodySnippet(r))
 	}
 	r, err = httpPost(dialer, "https://api.vk.ru/method/calls.getSettings",
 		url.Values{"v": {cfg.APIVersion}}, auth(tok.Data.AccessToken))
@@ -195,7 +195,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	json.Unmarshal(r, &settings)
 	appKey := settings.Response.Settings.PublicKey
 	if appKey == "" {
-		return nil, fmt.Errorf("empty public_key, response: %s", string(r))
+		return nil, fmt.Errorf("empty public_key, response: %s", common.BodySnippet(r))
 	}
 	r, err = httpPost(dialer, "https://api.vk.ru/method/messages.getCallToken",
 		url.Values{"v": {cfg.APIVersion}, "env": {"production"}}, auth(tok.Data.AccessToken))
@@ -205,10 +205,10 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	var callToken callTokenResponse
 	json.Unmarshal(r, &callToken)
 	if callToken.Response.Token == "" {
-		return nil, fmt.Errorf("empty call token, response: %s", string(r))
+		return nil, fmt.Errorf("empty call token, response: %s", common.BodySnippet(r))
 	}
 	if callToken.Response.APIBaseURL == "" {
-		return nil, fmt.Errorf("empty api_base_url, response: %s", string(r))
+		return nil, fmt.Errorf("empty api_base_url, response: %s", common.BodySnippet(r))
 	}
 	apiBaseURL := strings.TrimRight(callToken.Response.APIBaseURL, "/")
 	if !strings.HasSuffix(apiBaseURL, "/fb.do") {
@@ -228,7 +228,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	var okAuth okAuthResponse
 	json.Unmarshal(r, &okAuth)
 	if okAuth.SessionKey == "" {
-		return nil, fmt.Errorf("empty session_key, response: %s", string(r))
+		return nil, fmt.Errorf("empty session_key, response: %s", common.BodySnippet(r))
 	}
 	ms, _ := json.Marshal(map[string]bool{
 		"isAudioEnabled": false, "isVideoEnabled": true, "isScreenSharingEnabled": false,
@@ -244,7 +244,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	var jr joinResponse
 	json.Unmarshal(r, &jr)
 	if jr.Endpoint == "" {
-		return nil, fmt.Errorf("empty WS endpoint, response: %s", string(r))
+		return nil, fmt.Errorf("empty WS endpoint, response: %s", common.BodySnippet(r))
 	}
 	return &jr, nil
 }

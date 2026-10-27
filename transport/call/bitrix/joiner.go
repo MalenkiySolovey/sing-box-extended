@@ -86,7 +86,7 @@ func (j *BitrixJoiner) RunWithParams(jsonParams string) {
 		DualTrack   bool   `json:"dualTrack"`
 	}
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
-		j.logger.Error(fmt.Sprintf("bitrix-joiner: failed to parse params: %v", err))
+		j.logger.Error(fmt.Sprintf("bitrix-joiner: failed to parse params: %v", common.MaskError(err)))
 		return
 	}
 	j.joinLink = params.JoinLink
@@ -112,7 +112,7 @@ func (j *BitrixJoiner) RunWithParams(jsonParams string) {
 
 	portal, alias, err := parseBitrixJoinLink(j.joinLink)
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("bitrix-joiner: %v", err))
+		j.logger.Error(fmt.Sprintf("bitrix-joiner: %v", common.MaskError(err)))
 		return
 	}
 	j.portal = portal
@@ -121,7 +121,7 @@ func (j *BitrixJoiner) RunWithParams(jsonParams string) {
 		j.portal, j.alias, j.tunnelMode, j.vp8FPS, j.vp8Batch, j.reliable, j.dualTrack))
 
 	if err := j.runOnce(); err != nil {
-		j.logger.Error(fmt.Sprintf("bitrix-joiner: %v", err))
+		j.logger.Error(fmt.Sprintf("bitrix-joiner: %v", common.MaskError(err)))
 		return
 	}
 	for {
@@ -139,7 +139,7 @@ func (j *BitrixJoiner) RunWithParams(jsonParams string) {
 		}
 		j.logger.Info(fmt.Sprintf("bitrix-joiner: reconnect attempt #%d", j.reconnectAttempt.Load()))
 		if err := j.runOnce(); err != nil {
-			j.logger.Warn(fmt.Sprintf("bitrix-joiner: %v, will retry", err))
+			j.logger.Warn(fmt.Sprintf("bitrix-joiner: %v, will retry", common.MaskError(err)))
 		}
 	}
 }
@@ -164,7 +164,7 @@ func (j *BitrixJoiner) runOnce() error {
 	if err != nil {
 		return fmt.Errorf("join as guest: %w", err)
 	}
-	j.logger.Debug(fmt.Sprintf("bitrix-joiner: roomId=%s mediaServer=%s", res.RoomID, res.MediaServerURL))
+	j.logger.Debug("bitrix-joiner: private room and media parameters received")
 
 	var configureSettingEngine func(*webrtc.SettingEngine)
 	if j.PCConfig != nil {
@@ -342,7 +342,7 @@ func parseBitrixJoinLink(joinLink string) (portal, alias string, err error) {
 	portal = u.Scheme + "://" + u.Host
 	alias = strings.TrimPrefix(u.Path, "/video/")
 	if alias == "" || portal == "://" {
-		return "", "", fmt.Errorf("link missing portal or /video/CODE: %s", joinLink)
+		return "", "", fmt.Errorf("link missing portal or /video/CODE")
 	}
 	return portal, alias, nil
 }

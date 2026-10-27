@@ -241,15 +241,7 @@ func ScreenShareBindings(v any) []SlotBindEvent {
 }
 
 func BriefJSON(v any) string {
-	const max = 240
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprintf("<json err: %v>", err)
-	}
-	if len(b) > max {
-		return string(b[:max]) + "...(+" + fmt.Sprintf("%d", len(b)-max) + "B)"
-	}
-	return string(b)
+	return fmt.Sprintf("<private signaling payload: %T>", v)
 }
 
 func SetSlotsMessage(key int) map[string]any {

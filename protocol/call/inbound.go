@@ -2,6 +2,7 @@ package call
 
 import (
 	"context"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"net"
 	"sync"
 
@@ -103,6 +104,19 @@ func (h *Inbound) close() error {
 	return err
 }
 
+// CallJoinLink exposes private room material only to a trusted native owner
+// operation. Presence does not establish traffic readiness. Ordinary runtime
+// status, config readback and logs must never serialize this value.
+func (h *Inbound) CallJoinLink() (string, bool) {
+	h.access.Lock()
+	defer h.access.Unlock()
+	if h.closed || h.bridge == nil || h.ctx.Err() != nil {
+		return "", false
+	}
+	link := h.bridge.JoinLink()
+	return link, link != ""
+}
+
 func (h *Inbound) run() {
 	dnsRouter := service.FromContext[adapter.DNSRouter](h.ctx)
 	bridge, err := h.connect(h.ctx, call.Config{
@@ -119,7 +133,7 @@ func (h *Inbound) run() {
 		Logger:       h.logger,
 	})
 	if err != nil {
-		h.logger.ErrorContext(h.ctx, err)
+		h.logger.ErrorContext(h.ctx, common.MaskError(err))
 		return
 	}
 	h.access.Lock()

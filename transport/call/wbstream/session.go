@@ -143,7 +143,7 @@ func (s *Session) Start() error {
 	go s.lk.PingLoop()
 	go func() {
 		if err := s.lk.ReadLoop(); err != nil {
-			s.cfg.Logger.Debug(fmt.Sprintf("[lk] read loop ended: %v", err))
+			s.cfg.Logger.Debug(fmt.Sprintf("[lk] read loop ended: %v", common.MaskError(err)))
 		}
 		s.stopTunnels()
 		close(s.done)
@@ -183,15 +183,15 @@ func (s *Session) AdaptTrackCount(peerCount int) {
 	}
 	offer, err := pubPC.CreateOffer(nil)
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: create offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: create offer: %v", common.MaskError(err)))
 		return
 	}
 	if err := pubPC.SetLocalDescription(offer); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: set local offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: set local offer: %v", common.MaskError(err)))
 		return
 	}
 	if err := s.lk.SendOffer(offer.SDP); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: send offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: send offer: %v", common.MaskError(err)))
 		return
 	}
 	s.cfg.Logger.Debug(fmt.Sprintf("[lk] adapt-track-count: renegotiation offer sent (%d bytes)", len(offer.SDP)))
@@ -225,7 +225,7 @@ func (s *Session) onLKReady() {
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
 	)
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] create local cam track: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] create local cam track: %v", common.MaskError(err)))
 		return
 	}
 	tracks := []*webrtc.TrackLocalStaticSample{trackCam}
@@ -234,7 +234,7 @@ func (s *Session) onLKReady() {
 			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
 		)
 		if err != nil {
-			s.cfg.Logger.Error(fmt.Sprintf("[lk] create local screen track: %v", err))
+			s.cfg.Logger.Error(fmt.Sprintf("[lk] create local screen track: %v", common.MaskError(err)))
 			return
 		}
 		tracks = append(tracks, trackScreen)
@@ -244,7 +244,7 @@ func (s *Session) onLKReady() {
 		trx, err := pubPC.AddTransceiverFromTrack(t,
 			webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
 		if err != nil {
-			s.cfg.Logger.Error(fmt.Sprintf("[lk] add transceiver: %v", err))
+			s.cfg.Logger.Error(fmt.Sprintf("[lk] add transceiver: %v", common.MaskError(err)))
 			return
 		}
 		transceivers = append(transceivers, trx)
@@ -259,7 +259,7 @@ func (s *Session) onLKReady() {
 		Ordered: &ordered,
 	})
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] create reliable DC: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] create reliable DC: %v", common.MaskError(err)))
 		return
 	}
 	s.mu.Lock()
@@ -279,21 +279,21 @@ func (s *Session) onLKReady() {
 		}
 		if err := s.lk.SendAddTrack(t.ID(), "videochannel",
 			livekit.TrackTypeVideo, source, 1280, 720); err != nil {
-			s.cfg.Logger.Error(fmt.Sprintf("[lk] send add-track: %v", err))
+			s.cfg.Logger.Error(fmt.Sprintf("[lk] send add-track: %v", common.MaskError(err)))
 			return
 		}
 	}
 	offer, err := pubPC.CreateOffer(nil)
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] create offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] create offer: %v", common.MaskError(err)))
 		return
 	}
 	if err := pubPC.SetLocalDescription(offer); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] set local offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] set local offer: %v", common.MaskError(err)))
 		return
 	}
 	if err := s.lk.SendOffer(offer.SDP); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] send offer: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] send offer: %v", common.MaskError(err)))
 		return
 	}
 	s.cfg.Logger.Debug(fmt.Sprintf("[lk] sent publisher offer (%d bytes)", len(offer.SDP)))
@@ -364,12 +364,12 @@ func (s *Session) maybeStartDCTunnel() {
 
 	subRaw, err := subDC.Detach()
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach sub DC: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach sub DC: %v", common.MaskError(err)))
 		return
 	}
 	pubRaw, err := pubDC.Detach()
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach pub DC: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach pub DC: %v", common.MaskError(err)))
 		return
 	}
 	readWrapped := livekit.NewDataPacketWrapper(subRaw, livekit.DataPacketKindReliable)
@@ -482,7 +482,7 @@ func (s *Session) removePublisherTrack() bool {
 		vp8.RemoveLastSubTunnel()
 	}
 	if err := trx.Stop(); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: stop transceiver: %v", err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: stop transceiver: %v", common.MaskError(err)))
 		return false
 	}
 	return true
@@ -497,19 +497,19 @@ func (s *Session) addPublisherTrack(pubPC *webrtc.PeerConnection, slot int) bool
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
 	)
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: new track slot=%d: %v", slot, err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: new track slot=%d: %v", slot, common.MaskError(err)))
 		return false
 	}
 	trx, err := pubPC.AddTransceiverFromTrack(track,
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
 	if err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: add transceiver slot=%d: %v", slot, err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: add transceiver slot=%d: %v", slot, common.MaskError(err)))
 		return false
 	}
 	go rtc.DrainSenderRTCP(trx.Sender())
 	if err := s.lk.SendAddTrack(track.ID(), "videochannel",
 		livekit.TrackTypeVideo, source, 1280, 720); err != nil {
-		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: send add-track slot=%d: %v", slot, err))
+		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: send add-track slot=%d: %v", slot, common.MaskError(err)))
 		return false
 	}
 	s.mu.Lock()
@@ -691,7 +691,7 @@ func (s *Session) onParticipantUpdate(updates []livekit.ParticipantInfo) {
 			continue
 		}
 		if err := KickParticipant(common.HttpClient(s.cfg.Dialer), s.cfg.AccessToken, s.cfg.RoomID, e.identity); err != nil {
-			s.cfg.Logger.Warn(fmt.Sprintf("[wb] kick failed identity=%s: %v", e.identity, err))
+			s.cfg.Logger.Warn(fmt.Sprintf("[wb] kick failed identity=%s: %v", e.identity, common.MaskError(err)))
 			continue
 		}
 		s.cfg.Logger.Info(fmt.Sprintf("[wb] kicked stale peer identity=%s sid=%s", e.identity, e.sid))
@@ -707,7 +707,7 @@ func (s *Session) onParticipantUpdate(updates []livekit.ParticipantInfo) {
 
 func (s *Session) promotePeer(sid, identity string) {
 	if err := SetParticipantPermissions(common.HttpClient(s.cfg.Dialer), s.cfg.AccessToken, s.cfg.RoomID, identity, ModeratorPermissions); err != nil {
-		s.cfg.Logger.Warn(fmt.Sprintf("[wb] promote failed identity=%s: %v", identity, err))
+		s.cfg.Logger.Warn(fmt.Sprintf("[wb] promote failed identity=%s: %v", identity, common.MaskError(err)))
 		s.mu.Lock()
 		if entry, ok := s.peersBySID[sid]; ok {
 			entry.promoted = false

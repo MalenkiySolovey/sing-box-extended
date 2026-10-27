@@ -157,14 +157,14 @@ func (s *Session) RegisterAnonymousGuest(eventID, displayName string) (*GuestAut
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("register/guest: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("register/guest: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var auth GuestAuthResponse
 	if err := json.Unmarshal(raw, &auth); err != nil {
 		return nil, fmt.Errorf("register/guest decode: %w", err)
 	}
 	if auth.AccessToken == "" {
-		return nil, fmt.Errorf("register/guest: empty access_token: %s", string(raw))
+		return nil, fmt.Errorf("register/guest: empty access_token: %s", common.BodySnippet(raw))
 	}
 	s.applyRefreshResult(&auth)
 	return &auth, nil
@@ -216,14 +216,14 @@ func (s *Session) postLogin(target string, body []byte) (*LoginResponse, error) 
 		return nil, errLoginEndpointMissing
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("login: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("login: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var login LoginResponse
 	if err := json.Unmarshal(raw, &login); err != nil {
 		return nil, fmt.Errorf("login decode: %w", err)
 	}
 	if login.AccessToken == "" {
-		return nil, fmt.Errorf("login: empty access_token: %s", string(raw))
+		return nil, fmt.Errorf("login: empty access_token: %s", common.BodySnippet(raw))
 	}
 	return &login, nil
 }
@@ -301,7 +301,7 @@ func (s *Session) WhoAmI() (json.RawMessage, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("whoami: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("whoami: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	return raw, nil
 }
@@ -325,14 +325,14 @@ func (s *Session) GetEventBySlug(slug string) (*EventInfo, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get event: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("get event: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var event EventInfo
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return nil, fmt.Errorf("get event decode: %w", err)
 	}
 	if event.ID == "" {
-		return nil, fmt.Errorf("get event: empty id: %s", string(raw))
+		return nil, fmt.Errorf("get event: empty id: %s", common.BodySnippet(raw))
 	}
 	return &event, nil
 }
@@ -347,7 +347,7 @@ func (s *Session) GenerateSlug() (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("generate room ID: status %d: %s", resp.StatusCode, string(raw))
+		return "", fmt.Errorf("generate room ID: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var out struct {
 		Slug string `json:"slug"`
@@ -356,7 +356,7 @@ func (s *Session) GenerateSlug() (string, error) {
 		return "", fmt.Errorf("generate room ID decode: %w", err)
 	}
 	if out.Slug == "" {
-		return "", fmt.Errorf("generate room ID: empty: %s", string(raw))
+		return "", fmt.Errorf("generate room ID: empty: %s", common.BodySnippet(raw))
 	}
 	return out.Slug, nil
 }
@@ -395,14 +395,14 @@ func (s *Session) CreateEvent(opts CreateEventOptions) (*EventInfo, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("create event: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("create event: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var event EventInfo
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return nil, fmt.Errorf("create event decode: %w", err)
 	}
 	if event.ID == "" {
-		return nil, fmt.Errorf("create event: empty id: %s", string(raw))
+		return nil, fmt.Errorf("create event: empty id: %s", common.BodySnippet(raw))
 	}
 	return &event, nil
 }
@@ -439,14 +439,14 @@ func (s *Session) ConnectWSS(sessionID string) (*WSSConnectResponse, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("connect/wss: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("connect/wss: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var wss WSSConnectResponse
 	if err := json.Unmarshal(raw, &wss); err != nil {
 		return nil, fmt.Errorf("connect/wss decode: %w", err)
 	}
 	if wss.URL == "" {
-		return nil, fmt.Errorf("connect/wss: empty url: %s", string(raw))
+		return nil, fmt.Errorf("connect/wss: empty url: %s", common.BodySnippet(raw))
 	}
 	s.SessionID = sessionID
 	return &wss, nil
@@ -470,14 +470,14 @@ func (s *Session) LookupEventBySlugAnonymous(slug string) (*EventInfo, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get event anon: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("get event anon: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var event EventInfo
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return nil, fmt.Errorf("get event anon decode: %w", err)
 	}
 	if event.ID == "" {
-		return nil, fmt.Errorf("get event anon: empty id: %s", string(raw))
+		return nil, fmt.Errorf("get event anon: empty id: %s", common.BodySnippet(raw))
 	}
 	return &event, nil
 }
@@ -584,17 +584,17 @@ func (s *Session) callRefreshOnce() (*GuestAuthResponse, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return nil, fmt.Errorf("%w: status %d: %s", ErrSessionExpired, resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("%w: status %d: %s", ErrSessionExpired, resp.StatusCode, common.BodySnippet(raw))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("auth/refresh/web: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("auth/refresh/web: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var auth GuestAuthResponse
 	if err := json.Unmarshal(raw, &auth); err != nil {
 		return nil, fmt.Errorf("auth/refresh/web decode: %w", err)
 	}
 	if auth.AccessToken == "" {
-		return nil, fmt.Errorf("auth/refresh/web: empty access_token: %s", string(raw))
+		return nil, fmt.Errorf("auth/refresh/web: empty access_token: %s", common.BodySnippet(raw))
 	}
 	return &auth, nil
 }

@@ -499,7 +499,7 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 		created, err := rb.dialer.DialContext(ctx, N.NetworkUDP, M.ParseSocksaddr(addr))
 		cancel()
 		if err != nil {
-			rb.logger.Warn(fmt.Sprintf("relay[creator]: UDP %d open %s failed: %v", connID, common.MaskAddr(addr), err))
+			rb.logger.Warn(fmt.Sprintf("relay[creator]: UDP %d open %s failed: %v", connID, common.MaskAddr(addr), common.MaskError(err)))
 			return
 		}
 		actual, loaded, err := rb.retain(&rb.udpClients, connID, created)
@@ -534,7 +534,7 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 	}
 	egress.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := egress.Write(data); err != nil {
-		rb.logger.Debug(fmt.Sprintf("relay[creator]: UDP %d write %s failed: %v", connID, common.MaskAddr(addr), err))
+		rb.logger.Debug(fmt.Sprintf("relay[creator]: UDP %d write %s failed: %v", connID, common.MaskAddr(addr), common.MaskError(err)))
 	}
 }
 

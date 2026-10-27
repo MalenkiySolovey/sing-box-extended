@@ -207,7 +207,7 @@ func (c *Client) completeOAuth() error {
 		if err != nil {
 			return err
 		}
-		c.Logger.Debug(fmt.Sprintf("[auth] oauth hop %d: final=%s len=%d", hop, final, len(body)))
+		c.Logger.Debug(fmt.Sprintf("[auth] oauth hop %d: received %d bytes", hop, len(body)))
 		if next := reJSRedirect.FindStringSubmatch(body); next != nil {
 			target = next[1]
 			continue

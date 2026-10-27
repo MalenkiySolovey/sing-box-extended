@@ -133,7 +133,7 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 		DualTrack   bool   `json:"dualTrack"`
 	}
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: failed to parse params: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: failed to parse params: %v", common.MaskError(err)))
 		return
 	}
 	j.joinLink = params.JoinLink
@@ -143,7 +143,7 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 	}
 	obf, err := tunnel.NewTunnelObfuscator(tunnel.DeriveSecretFromJoinLink(params.JoinLink))
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: obfuscator init failed: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: obfuscator init failed: %v", common.MaskError(err)))
 		return
 	}
 	j.obf = obf
@@ -151,11 +151,11 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 	j.vp8Batch = params.VP8Batch
 	j.reliable = params.Reliable
 	j.dualTrack = params.DualTrack
-	j.logger.Info(fmt.Sprintf("telemost-joiner: link=%s name=%s vp8Fps=%d vp8Batch=%d dualTrack=%v localEpoch=0x%08x",
-		j.joinLink, j.displayName, params.VP8FPS, params.VP8Batch, j.dualTrack, obf.LocalEpoch()))
+	j.logger.Info(fmt.Sprintf("telemost-joiner: vp8Fps=%d vp8Batch=%d dualTrack=%v localEpoch=0x%08x",
+		params.VP8FPS, params.VP8Batch, j.dualTrack, obf.LocalEpoch()))
 	j.logger.Info("telemost-joiner: connecting")
 	if err := j.runOnce(); err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: %v", common.MaskError(err)))
 		return
 	}
 	for {
@@ -173,7 +173,7 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 		}
 		j.logger.Info(fmt.Sprintf("telemost-joiner: reconnect attempt #%d", j.reconnectAttempt.Load()))
 		if err := j.runOnce(); err != nil {
-			j.logger.Warn(fmt.Sprintf("telemost-joiner: %v, will retry", err))
+			j.logger.Warn(fmt.Sprintf("telemost-joiner: %v, will retry", common.MaskError(err)))
 		}
 	}
 }
@@ -280,13 +280,13 @@ func (j *TelemostJoiner) getConnection() error {
 		name = "Joiner"
 	}
 	connPath := "/conferences/" + confURL + "/connection?next_gen_media_platform_allowed=true&display_name=" + name + "&waiting_room_supported=true"
-	j.logger.Debug(fmt.Sprintf("telemost-joiner: getting connection for %s", j.joinLink))
+	j.logger.Debug("telemost-joiner: getting connection")
 	responseBody, status, err := j.apiClient().TMRequest("GET", connPath)
 	if err != nil {
 		return fmt.Errorf("get connection: %w", err)
 	}
 	if status != 200 {
-		return fmt.Errorf("get connection: status %d: %s", status, string(responseBody))
+		return fmt.Errorf("get connection: status %d: %s", status, common.BodySnippet(responseBody))
 	}
 	var initial struct {
 		ConnectionType string `json:"connection_type"`
@@ -325,7 +325,7 @@ func (j *TelemostJoiner) getConnection() error {
 			return fmt.Errorf("post-admit connection: %w", err)
 		}
 		if status != 200 {
-			return fmt.Errorf("post-admit connection: status %d: %s", status, string(responseBody))
+			return fmt.Errorf("post-admit connection: status %d: %s", status, common.BodySnippet(responseBody))
 		}
 	}
 	var conn struct {
@@ -341,7 +341,7 @@ func (j *TelemostJoiner) getConnection() error {
 	}
 	json.Unmarshal(responseBody, &conn)
 	if conn.ClientConfig.MediaServerURL == "" {
-		return fmt.Errorf("empty media_server_url: %s", string(responseBody))
+		return fmt.Errorf("empty media_server_url: %s", common.BodySnippet(responseBody))
 	}
 	j.peerID = conn.PeerID
 	j.roomID = conn.RoomID
@@ -363,7 +363,7 @@ func (j *TelemostJoiner) getConnection() error {
 		}
 		j.iceServers = append(j.iceServers, ice)
 	}
-	j.logger.Debug(fmt.Sprintf("telemost-joiner: peer_id=%s room_id=%s media_url=%s", j.peerID, j.roomID, j.mediaURL))
+	j.logger.Debug("telemost-joiner: private peer/room/media identity received")
 	return nil
 }
 
@@ -372,7 +372,7 @@ func (j *TelemostJoiner) wsSend(msg any) {
 	defer j.wsMu.Unlock()
 	if j.ws != nil {
 		data, _ := json.Marshal(msg)
-		j.logger.Debug(fmt.Sprintf("telemost-joiner: [DIAG] -> %s", string(data)))
+		j.logger.Debug(fmt.Sprintf("telemost-joiner: [DIAG] -> %s", common.BodySnippet(data)))
 		j.ws.WriteJSON(msg)
 	}
 }
@@ -434,13 +434,13 @@ func (j *TelemostJoiner) initPC() {
 
 	subAPI, err := newAPI()
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create subscriber webrtc API: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create subscriber webrtc API: %v", common.MaskError(err)))
 		return
 	}
 
 	subPC, err := subAPI.NewPeerConnection(config)
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create sub PC: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create sub PC: %v", common.MaskError(err)))
 		return
 	}
 	j.subPC = subPC
@@ -466,13 +466,13 @@ func (j *TelemostJoiner) initPC() {
 	})
 	pubAPI, err := newAPI()
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create publisher webrtc API: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create publisher webrtc API: %v", common.MaskError(err)))
 		return
 	}
 
 	pubPC, err := pubAPI.NewPeerConnection(config)
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create pub PC: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create pub PC: %v", common.MaskError(err)))
 		return
 	}
 	j.pubPC = pubPC
@@ -525,11 +525,11 @@ func (j *TelemostJoiner) sendPubOffer() {
 	}
 	offer, err := j.pubPC.CreateOffer(nil)
 	if err != nil {
-		j.logger.Warn(fmt.Sprintf("telemost-joiner: pub offer failed: %v", err))
+		j.logger.Warn(fmt.Sprintf("telemost-joiner: pub offer failed: %v", common.MaskError(err)))
 		return
 	}
 	if err := j.pubPC.SetLocalDescription(offer); err != nil {
-		j.logger.Warn(fmt.Sprintf("telemost-joiner: set pub local desc: %v", err))
+		j.logger.Warn(fmt.Sprintf("telemost-joiner: set pub local desc: %v", common.MaskError(err)))
 		return
 	}
 	offer.SDP = MungeSDPAddVideoContent(offer.SDP)
@@ -560,7 +560,7 @@ func (j *TelemostJoiner) handlePubAnswer(sdp string) {
 		SDP:  sdp,
 	})
 	if err != nil {
-		j.logger.Warn(fmt.Sprintf("telemost-joiner: set pub remote desc: %v", err))
+		j.logger.Warn(fmt.Sprintf("telemost-joiner: set pub remote desc: %v", common.MaskError(err)))
 		return
 	}
 	j.pubRemoteSet = true
@@ -616,7 +616,7 @@ func (j *TelemostJoiner) forceReconnect(reason string) {
 		confURL := url.QueryEscape(j.joinLink)
 		_, status, err := j.apiClient().TMRequest("POST", "/conferences/"+confURL+"/commands/kick?peer_id="+url.QueryEscape(oldPeerID)+"&with_ban=false")
 		if err != nil || status >= 400 {
-			j.logger.Warn(fmt.Sprintf("telemost-joiner: self-kick failed: status=%d err=%v", status, err))
+			j.logger.Warn(fmt.Sprintf("telemost-joiner: self-kick failed: status=%d err=%v", status, common.MaskError(err)))
 		}
 	}
 	j.instanceID = uuid.New().String()
@@ -652,7 +652,7 @@ func (j *TelemostJoiner) handleSubOffer(sdp string, pcSeq int) {
 		SDP:  sdp,
 	})
 	if err != nil {
-		j.logger.Warn(fmt.Sprintf("telemost-joiner: set sub remote desc: %v", err))
+		j.logger.Warn(fmt.Sprintf("telemost-joiner: set sub remote desc: %v", common.MaskError(err)))
 		return
 	}
 	j.subRemoteSet = true
@@ -662,7 +662,7 @@ func (j *TelemostJoiner) handleSubOffer(sdp string, pcSeq int) {
 	j.subPending = nil
 	answer, err := j.subPC.CreateAnswer(nil)
 	if err != nil {
-		j.logger.Warn(fmt.Sprintf("telemost-joiner: create sub answer: %v", err))
+		j.logger.Warn(fmt.Sprintf("telemost-joiner: create sub answer: %v", common.MaskError(err)))
 		return
 	}
 	j.subPC.SetLocalDescription(answer)
@@ -949,7 +949,7 @@ func (j *TelemostJoiner) connectAndRun() {
 			interval = 30
 		}
 		if err := j.apiClient().RequestStates(j.joinLink, j.peerID); err != nil {
-			j.logger.Debug(fmt.Sprintf("telemost-joiner: initial request-states: %v", err))
+			j.logger.Debug(fmt.Sprintf("telemost-joiner: initial request-states: %v", common.MaskError(err)))
 		}
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
@@ -959,7 +959,7 @@ func (j *TelemostJoiner) connectAndRun() {
 				return
 			case <-ticker.C:
 				if err := j.apiClient().RequestStates(j.joinLink, j.peerID); err != nil {
-					j.logger.Debug(fmt.Sprintf("telemost-joiner: request-states: %v", err))
+					j.logger.Debug(fmt.Sprintf("telemost-joiner: request-states: %v", common.MaskError(err)))
 				}
 			}
 		}

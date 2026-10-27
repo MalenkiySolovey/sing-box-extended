@@ -18,13 +18,10 @@ import (
 
 const UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 
-const bodySnippetLimit = 300
-
+// HTTP responses can contain room keys, cookies or access tokens even on error.
+// Preserve a useful size diagnostic without copying authentication material.
 func BodySnippet(body []byte) string {
-	if len(body) > bodySnippetLimit {
-		return string(body[:bodySnippetLimit]) + "..."
-	}
-	return string(body)
+	return fmt.Sprintf("<private response: %d bytes>", len(body))
 }
 
 func LoadCookies(path string) (string, error) {

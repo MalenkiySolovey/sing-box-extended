@@ -184,24 +184,24 @@ func creatorReconnectLoop(
 			}
 			_, roomToken, accessToken, serverURL, err := AuthAsLoggedIn(httpClient, cookieHeader, bearer, roomID, "Creator")
 			if err != nil {
-				logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, refreshing bearer", err))
+				logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, refreshing bearer", common.MaskError(err)))
 				var rotated map[string]string
 				bearer, rotated, err = RefreshAccessToken(httpClient, cookieHeader, deviceID)
 				if err != nil {
-					logger.Warn(fmt.Sprintf("wbstream: rejoin token refresh failed: %v, retrying", err))
+					logger.Warn(fmt.Sprintf("wbstream: rejoin token refresh failed: %v, retrying", common.MaskError(err)))
 					continue
 				}
 				cookieHeader = mergeCookies(cookieHeader, rotated)
 				_, roomToken, accessToken, serverURL, err = AuthAsLoggedIn(httpClient, cookieHeader, bearer, roomID, "Creator")
 				if err != nil {
-					logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, retrying", err))
+					logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, retrying", common.MaskError(err)))
 					continue
 				}
 			}
 			newSess, tunCh := joinSession(roomToken, accessToken, serverURL)
 			if err := newSess.Start(); err != nil {
 				newSess.Close()
-				logger.Warn(fmt.Sprintf("wbstream: rejoin session start failed: %v, retrying", err))
+				logger.Warn(fmt.Sprintf("wbstream: rejoin session start failed: %v, retrying", common.MaskError(err)))
 				continue
 			}
 			select {

@@ -84,7 +84,7 @@ func (u *TunnelRelay) Init(iceServers []webrtc.ICEServer) error {
 		ID:         &dcID,
 	})
 	if err != nil {
-		u.logger.Warn(fmt.Sprintf("[relay] could not create tunnel DC: %v", err))
+		u.logger.Warn(fmt.Sprintf("[relay] could not create tunnel DC: %v", common.MaskError(err)))
 	} else {
 		u.dc = dc
 		dc.OnOpen(func() {

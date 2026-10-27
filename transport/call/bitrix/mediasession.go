@@ -240,12 +240,12 @@ func (s *MediaSession) maybeStartDCTunnel() {
 
 	subRaw, err := subDC.Detach()
 	if err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] detach sub _reliable: %v", err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] detach sub _reliable: %v", common.MaskError(err)))
 		return
 	}
 	pubRaw, err := pubDC.Detach()
 	if err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] detach pub _reliable: %v", err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] detach pub _reliable: %v", common.MaskError(err)))
 		return
 	}
 	readWrapped := livekit.NewDataPacketWrapper(subRaw, livekit.DataPacketKindReliable)
@@ -389,7 +389,7 @@ func (s *MediaSession) AdaptTrackCount(peerCount int) {
 		}
 	}
 	if err := s.p.Signal.Renegotiate(); err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: renegotiate: %v", err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: renegotiate: %v", common.MaskError(err)))
 		return
 	}
 	s.p.Logger.Debug("[bx] adapt-track-count: renegotiation offer sent")
@@ -402,12 +402,12 @@ func (s *MediaSession) addPublisherTrack(slot int) bool {
 	}
 	track, err := s.newVP8Track()
 	if err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: new track slot=%d: %v", slot, err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: new track slot=%d: %v", slot, common.MaskError(err)))
 		return false
 	}
 	trx, err := s.p.Signal.AddPublisherTrack(track, source)
 	if err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: add track slot=%d: %v", slot, err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: add track slot=%d: %v", slot, common.MaskError(err)))
 		return false
 	}
 	go rtc.DrainSenderRTCP(trx.Sender())
@@ -448,7 +448,7 @@ func (s *MediaSession) removePublisherTrack() bool {
 		vp8.RemoveLastSubTunnel()
 	}
 	if err := trx.Stop(); err != nil {
-		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: stop transceiver: %v", err))
+		s.p.Logger.Debug(fmt.Sprintf("[bx] adapt-track-count: stop transceiver: %v", common.MaskError(err)))
 		return false
 	}
 	return true

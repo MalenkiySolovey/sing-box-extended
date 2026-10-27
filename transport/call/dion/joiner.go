@@ -53,7 +53,7 @@ func (j *DionJoiner) RunWithParams(jsonParams string) {
 		DisplayName string `json:"displayName"`
 	}
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
-		j.logger.Error(fmt.Sprintf("dion-joiner: failed to parse params: %v", err))
+		j.logger.Error(fmt.Sprintf("dion-joiner: failed to parse params: %v", common.MaskError(err)))
 		return
 	}
 	slug := ParseRoom(params.RoomID)
@@ -66,10 +66,10 @@ func (j *DionJoiner) RunWithParams(jsonParams string) {
 	if j.displayName == "" {
 		j.displayName = "Joiner"
 	}
-	j.logger.Debug(fmt.Sprintf("dion-joiner: room=%s name=%s", j.roomID, j.displayName))
+	j.logger.Debug("dion-joiner: private room parameters received")
 	j.logger.Info("dion-joiner: connecting")
 	if err := j.runOnce(); err != nil {
-		j.logger.Error(fmt.Sprintf("dion-joiner: %v", err))
+		j.logger.Error(fmt.Sprintf("dion-joiner: %v", common.MaskError(err)))
 		return
 	}
 	for {
@@ -87,7 +87,7 @@ func (j *DionJoiner) RunWithParams(jsonParams string) {
 		}
 		j.logger.Info(fmt.Sprintf("dion-joiner: reconnect attempt #%d", j.reconnectAttempt.Load()))
 		if err := j.runOnce(); err != nil {
-			j.logger.Warn(fmt.Sprintf("dion-joiner: %v, will retry", err))
+			j.logger.Warn(fmt.Sprintf("dion-joiner: %v, will retry", common.MaskError(err)))
 		}
 	}
 }
@@ -115,7 +115,7 @@ func (j *DionJoiner) runOnce() error {
 	if err != nil {
 		return fmt.Errorf("obfuscator init: %w", err)
 	}
-	j.logger.Debug(fmt.Sprintf("dion-joiner: obf key-source=%q localEpoch=0x%08x", event.Slug, obf.LocalEpoch()))
+	j.logger.Debug(fmt.Sprintf("dion-joiner: obf localEpoch=0x%08x", obf.LocalEpoch()))
 	call := NewCall(CallConfig{
 		Auth:        auth,
 		Event:       event,
