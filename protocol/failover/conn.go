@@ -12,7 +12,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 )
 
-type dial func() (net.Conn, error)
+type dial func(context.Context) (net.Conn, error)
 
 type failoverConn struct {
 	net.Conn
@@ -134,7 +134,11 @@ func (c *failoverConn) Write(b []byte) (int, error) {
 	return total, nil
 }
 
-func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
+func (c *failoverConn) RestoreConn(conn net.Conn) error {
+	return c.restoreConn(c.ctx, conn)
+}
+
+func (c *failoverConn) restoreConn(ctx context.Context, conn net.Conn) (retErr error) {
 	c.restoreMtx.Lock()
 	defer c.restoreMtx.Unlock()
 	defer func() {
@@ -142,13 +146,13 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 			_ = conn.Close()
 		}
 	}()
-	if err := c.ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := conn.SetDeadline(time.Now().Add(C.TCPConnectTimeout)); err != nil {
 		return err
 	}
-	stop := context.AfterFunc(c.ctx, func() { _ = conn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	c.mtx.RLock()
 	old := c.Conn
@@ -166,11 +170,11 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 	c.mtx.RLock()
 	err := c.err
 	c.mtx.RUnlock()
-	if err != nil || c.ctx.Err() != nil {
+	if err != nil || ctx.Err() != nil {
 		if err != nil {
 			return err
 		}
-		return c.ctx.Err()
+		return ctx.Err()
 	}
 	ack := []byte{
 		byte(c.readIndex >> 24),
@@ -211,7 +215,7 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 	if c.err != nil {
 		return c.err
 	}
-	if err := c.ctx.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	c.Conn = conn
@@ -341,25 +345,29 @@ func (c *failoverConn) awaitConn(oldConn net.Conn) error {
 		return c.ctx.Err()
 	}
 	oldConn.Close()
-	timer := time.NewTimer(C.TCPConnectTimeout)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(c.ctx, C.TCPConnectTimeout)
+	defer cancel()
+	waitError := func() error {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
+		return c.fail(SessionExpired)
+	}
 	if c.dial != nil {
 		for {
 			select {
-			case <-c.ctx.Done():
-				return c.ctx.Err()
-			case <-timer.C:
-				return c.fail(SessionExpired)
+			case <-ctx.Done():
+				return waitError()
 			default:
 			}
-			conn, err := c.dial()
+			conn, err := c.dial(ctx)
 			if err != nil {
 				if err == SessionNotFound {
 					return c.fail(err)
 				}
 				continue
 			}
-			err = c.RestoreConn(conn)
+			err = c.restoreConn(ctx, conn)
 			if err != nil {
 				if err == SessionBroken {
 					return c.fail(err)
@@ -381,10 +389,8 @@ func (c *failoverConn) awaitConn(oldConn net.Conn) error {
 		c.mtx.Unlock()
 		select {
 		case <-ready:
-		case <-timer.C:
-			return c.fail(SessionExpired)
-		case <-c.ctx.Done():
-			return c.ctx.Err()
+		case <-ctx.Done():
+			return waitError()
 		}
 	}
 	return nil
