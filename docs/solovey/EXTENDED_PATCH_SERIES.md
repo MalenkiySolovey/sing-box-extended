@@ -54,4 +54,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0037 | Pair LiveKit read/ping ownership, interrupt pending signaling, reject late socket publication and join successful WBStream session workers | ./transport/call/livekit -run TestCallLivekit |
 
+| EXTENDED-0038 | Cancel Dion conference setup, guard late resources, join signaling/stats/discovery/peer readers and keep arbitrary RPC responses out of diagnostics | ./transport/call/dion -run TestCallDion |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
