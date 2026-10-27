@@ -68,4 +68,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0044 | Preserve native CloseRead/CloseWrite delegation and errors through the Sudoku client lifetime wrapper; half-close retains ownership until full retirement | ./transport/sudoku ./protocol/sudoku -run TestSudoku\|TestClient |
 
+| EXTENDED-0045 | Retire native Bond borrowed raw legs and request handshakes through the serving Scope while retaining canonical outbound ownership | ./protocol/bond ./protocol/failover -race |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
