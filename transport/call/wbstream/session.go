@@ -115,6 +115,7 @@ func (s *Session) Start() error {
 			return s.cfg.Dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
 		DNSRouter: s.cfg.DNSRouter,
+		Dialer:    s.cfg.Dialer,
 	})
 	if err != nil {
 		return err
@@ -140,9 +141,8 @@ func (s *Session) Start() error {
 	if err := s.lk.Connect(); err != nil {
 		return err
 	}
-	go s.lk.PingLoop()
 	go func() {
-		if err := s.lk.ReadLoop(); err != nil {
+		if err := s.lk.Run(); err != nil {
 			s.cfg.Logger.Debug(fmt.Sprintf("[lk] read loop ended: %v", common.MaskError(err)))
 		}
 		s.stopTunnels()
@@ -201,6 +201,13 @@ func (s *Session) Close() {
 	if s.lk != nil {
 		s.lk.Close()
 	}
+}
+
+// Only the outer owner calls this after Start succeeded. Read-loop callbacks
+// use Close so they never wait for their own worker.
+func (s *Session) closeAndWait() {
+	s.Close()
+	<-s.done
 }
 
 func (s *Session) stopTunnels() {
