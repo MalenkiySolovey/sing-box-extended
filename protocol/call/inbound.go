@@ -111,7 +111,7 @@ func (h *Inbound) run() {
 		Password:     h.options.Password,
 		ReadBuffer:   h.options.ReadBuffer,
 		Role:         call.RoleCreator,
-		Dialer:       h.network,
+		Dialer:       h.network.transportDialer(),
 		DNSRouter:    dnsRouter,
 		Logger:       h.logger,
 	})
