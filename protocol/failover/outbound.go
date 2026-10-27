@@ -122,14 +122,18 @@ func (f *Failover) DialContext(ctx context.Context, network string, destination 
 	if err != nil {
 		return nil, err
 	}
-	sessionCtx, cancel := context.WithCancel(ctx)
-	stopServing := context.AfterFunc(f.ctx, cancel)
-	conn, err := f.dialSession(sessionCtx, network, &Request{Command: CommandTCP, UUID: sessionUUID, Destination: destination})
+	// The caller's context bounds dialing, as with net.Dialer. Once connected,
+	// the resumable stream belongs to its serving Scope and explicit Close.
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	stopDial := context.AfterFunc(f.ctx, cancelDial)
+	conn, err := f.dialSession(dialCtx, network, &Request{Command: CommandTCP, UUID: sessionUUID, Destination: destination})
+	stopDial()
+	cancelDial()
 	if err != nil {
-		stopServing()
-		cancel()
 		return nil, err
 	}
+	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopServing := context.AfterFunc(f.ctx, cancel)
 	return NewFailoverConn(sessionCtx, conn, func(ctx context.Context) (net.Conn, error) {
 		return f.dialSession(ctx, network, &Request{Command: CommandReconnect, UUID: sessionUUID, Destination: destination})
 	}, func() { stopServing(); cancel() }), nil
