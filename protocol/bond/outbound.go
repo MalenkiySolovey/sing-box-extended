@@ -9,6 +9,7 @@ import (
 	"github.com/gofrs/uuid/v5"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
+	"github.com/sagernet/sing-box/common/interrupt"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -32,6 +33,10 @@ type Outbound struct {
 	downloadRatios []uint8
 	uploadRatios   []uint8
 	uotClient      *uot.Client
+	access         sync.Mutex
+	closed         bool
+	dials          sync.WaitGroup
+	connections    *interrupt.Group
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.BondOutboundOptions) (adapter.Outbound, error) {
@@ -76,6 +81,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		downloadRatios: downloadRatios,
 		uploadRatios:   uploadRatios,
 		logger:         logger,
+		connections:    interrupt.NewGroup(),
 	}
 	outbound.uotClient = &uot.Client{
 		Dialer:  outbound,
@@ -85,6 +91,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 }
 
 func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage == adapter.StartStateInitialize {
+		h.ctx = scope.Context()
+		scope.Add(h.close)
+	}
 	for _, outbound := range h.outbounds {
 		lifecycle, isLifecycle := outbound.(adapter.Lifecycle)
 		if !isLifecycle {
@@ -95,6 +105,17 @@ func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (h *Outbound) close() error {
+	h.access.Lock()
+	h.closed = true
+	h.access.Unlock()
+	// Borrowed outbounds remain owned by their canonical manager. Retire only
+	// this parent's raw streams before joining blocked request handshakes.
+	h.connections.Interrupt(true)
+	h.dials.Wait()
 	return nil
 }
 
@@ -133,6 +154,17 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 	if N.NetworkName(network) == N.NetworkUDP {
 		return h.uotClient.DialContext(ctx, network, destination)
 	}
+	h.access.Lock()
+	if h.closed {
+		h.access.Unlock()
+		return nil, net.ErrClosed
+	}
+	h.dials.Add(1)
+	h.access.Unlock()
+	defer h.dials.Done()
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	stopDial := context.AfterFunc(h.ctx, cancelDial)
+	defer func() { stopDial(); cancelDial() }()
 	conns := make([]net.Conn, len(h.outbounds))
 	connUUID, err := uuid.NewV4()
 	if err != nil {
@@ -144,13 +176,28 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 	for i, outbound := range h.outbounds {
 		wg.Go(
 			func() {
-				conn, err := outbound.DialContext(ctx, network, Destination)
+				conn, err := outbound.DialContext(dialCtx, network, Destination)
 				if err != nil {
+					if conn != nil {
+						_ = conn.Close()
+					}
 					mtx.Lock()
 					errs = append(errs, err)
 					mtx.Unlock()
 					return
 				}
+				h.access.Lock()
+				if h.closed {
+					h.access.Unlock()
+					_ = conn.Close()
+					mtx.Lock()
+					errs = append(errs, net.ErrClosed)
+					mtx.Unlock()
+					return
+				}
+				conn = h.connections.NewConn(conn, false, false)
+				h.access.Unlock()
+				stopHandshake := context.AfterFunc(dialCtx, func() { _ = conn.Close() })
 				err = WriteRequest(
 					conn,
 					&Request{
@@ -162,6 +209,10 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 						Destination:   destination,
 					},
 				)
+				stopHandshake()
+				if err == nil {
+					err = dialCtx.Err()
+				}
 				if err != nil {
 					conn.Close()
 					mtx.Lock()
@@ -174,6 +225,11 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 		)
 	}
 	wg.Wait()
+	h.access.Lock()
+	if h.closed {
+		errs = append(errs, net.ErrClosed)
+	}
+	h.access.Unlock()
 	if len(errs) != 0 {
 		for _, conn := range conns {
 			if conn != nil {
