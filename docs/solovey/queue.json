@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "907445215d84f898e28f140845eae2784c270470",
+  "codeTree": "3c77895eea2f1840c561c4ab100f184d246fcd3b",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -39,7 +39,9 @@
     "EXTENDED-0028",
     "EXTENDED-0029",
     "EXTENDED-0030",
-    "EXTENDED-0031"
+    "EXTENDED-0031",
+    "EXTENDED-0032",
+    "EXTENDED-0033"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
@@ -69,7 +71,8 @@
     "./protocol/failover",
     "./protocol/call",
     "./transport/call/tunnel",
-    "./transport/call/wtsignal"
+    "./transport/call/wtsignal",
+    "./transport/call/common"
   ],
   "buildTags": "with_quic,with_grpc,with_utls,with_gvisor",
   "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",
