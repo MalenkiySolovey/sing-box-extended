@@ -62,4 +62,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0041 | Join TrustTunnel request/health workers, reject retired admission/client resurrection, interrupt blocked writes and close failed QUIC transports | ./protocol/trusttunnel ./transport/trusttunnel -run TestTrustTunnel |
 
+| EXTENDED-0042 | Interrupt server response writes and join admitted write/Flush work before HTTP handler completion, preserving blocked client-pipe retirement | ./transport/trusttunnel ./protocol/trusttunnel -run TestTrustTunnel |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
