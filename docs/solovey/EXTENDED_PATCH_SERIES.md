@@ -26,4 +26,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0019 | Preserve large/short Bond writes, bounded frames and caller read accounting | ./protocol/bond -run TestBond(Frames\|Read) |
 | EXTENDED-0020 | Own Bond cache/admission, pending/routed legs and all-leg callbacks through serving Scope; reject duplicate/conflicting bundles | ./protocol/bond -run TestBond |
 
+| EXTENDED-0021 | Expose a snapshot of actual Scope-owned Bond members for effective readback and existing authenticated-parent controls | ./protocol/bond -run TestBondMemberSnapshotKeepsServingOwnership |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
