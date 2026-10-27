@@ -72,6 +72,10 @@ type Client struct {
 	healthCheck      bool
 	healthCheckTimer *time.Timer
 	count            atomic.Int64
+	lifeMu           sync.Mutex
+	closed           bool
+	closeOnce        sync.Once
+	workers          sync.WaitGroup
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
@@ -106,6 +110,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				}
 				conn, err := qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
 				if err != nil {
+					_ = udpConn.Close()
 					return nil, err
 				}
 				conn.SetCongestionControl(congestionControlFactory(conn))
@@ -130,11 +135,13 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 func (c *Client) start() {
 	if c.healthCheck {
 		c.healthCheckTimer = time.NewTimer(DefaultHealthCheckTimeout)
+		c.workers.Add(1)
 		go c.loopHealthCheck()
 	}
 }
 
 func (c *Client) loopHealthCheck() {
+	defer c.workers.Done()
 	for {
 		select {
 		case <-c.healthCheckTimer.C:
@@ -149,14 +156,23 @@ func (c *Client) loopHealthCheck() {
 }
 
 func (c *Client) resetHealthCheckTimer() {
-	if c.healthCheckTimer == nil {
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	if c.closed || c.healthCheckTimer == nil {
 		return
 	}
 	c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
 }
 
 func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *httpConn) error {
+	c.lifeMu.Lock()
+	if c.closed || c.ctx.Err() != nil {
+		c.lifeMu.Unlock()
+		return net.ErrClosed
+	}
 	c.startOnce.Do(c.start)
+	c.workers.Add(1)
+	c.lifeMu.Unlock()
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
 	*conn = httpConn{writer: pipeWriter, created: make(chan struct{})}
@@ -175,6 +191,7 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 	})
 	var requestErr common.TypedValue[error]
 	go func() {
+		defer c.workers.Done()
 		request = request.WithContext(streamCtx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
@@ -198,6 +215,8 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-c.ctx.Done():
+		return net.ErrClosed
 	case <-gotConn:
 		return requestErr.Load()
 	}
@@ -219,7 +238,9 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 	conn := &tcpConn{}
 	err := c.roundTrip(ctx, c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
 	if err != nil {
-		_ = conn.Close()
+		if conn.created != nil {
+			_ = conn.Close()
+		}
 		return nil, err
 	}
 	return conn, nil
@@ -229,27 +250,47 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	conn := &clientPacketConn{}
 	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
 	if err != nil {
-		_ = conn.Close()
+		if conn.created != nil {
+			_ = conn.Close()
+		}
 		return nil, err
 	}
 	return conn, nil
 }
 
 func (c *Client) Close() error {
-	c.cancel()
-	if closer, ok := c.roundTripper.(io.Closer); ok {
-		_ = closer.Close()
-	}
-	if t, ok := c.roundTripper.(*http2.Transport); ok {
-		t.CloseIdleConnections()
-	}
-	if c.healthCheckTimer != nil {
-		c.healthCheckTimer.Stop()
-	}
+	c.closeOnce.Do(func() {
+		c.lifeMu.Lock()
+		c.closed = true
+		c.cancel()
+		if c.healthCheckTimer != nil {
+			c.healthCheckTimer.Stop()
+		}
+		c.lifeMu.Unlock()
+		if closer, ok := c.roundTripper.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if t, ok := c.roundTripper.(*http2.Transport); ok {
+			t.CloseIdleConnections()
+		}
+	})
+	// Client-owned workers never call Close; the serving owner joins them.
+	c.workers.Wait()
 	return nil
 }
 
 func (c *Client) HealthCheck(ctx context.Context) error {
+	c.lifeMu.Lock()
+	if c.closed || c.ctx.Err() != nil {
+		c.lifeMu.Unlock()
+		return net.ErrClosed
+	}
+	c.workers.Add(1)
+	c.lifeMu.Unlock()
+	defer c.workers.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer func() { stop(); cancel() }()
 	defer c.resetHealthCheckTimer()
 	response, err := c.roundTripper.RoundTrip(c.newConnectRequest(HealthCheckMagicAddress, runtime.GOOS).WithContext(ctx))
 	if err != nil {
@@ -264,6 +305,9 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 
 type MultiplexClient struct {
 	mutex          sync.Mutex
+	closed         bool
+	closeOnce      sync.Once
+	closeErr       error
 	maxConnections int
 	minStreams     int
 	maxStreams     int
@@ -311,21 +355,29 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 }
 
 func (c *MultiplexClient) Close() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	var errs []error
-	for _, t := range c.clients {
-		if err := t.Close(); err != nil {
-			errs = append(errs, err)
+	c.closeOnce.Do(func() {
+		c.mutex.Lock()
+		c.closed = true
+		clients := c.clients
+		c.clients = nil
+		c.mutex.Unlock()
+		var errs []error
+		for _, t := range clients {
+			if err := t.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
-	}
-	c.clients = nil
-	return errors.Join(errs...)
+		c.closeErr = errors.Join(errs...)
+	})
+	return c.closeErr
 }
 
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.closed || c.ctx.Err() != nil {
+		return nil, net.ErrClosed
+	}
 	var transport *Client
 	for _, t := range c.clients {
 		if transport == nil || t.count.Load() < transport.count.Load() {
