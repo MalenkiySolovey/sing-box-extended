@@ -17,6 +17,7 @@ type dial func() (net.Conn, error)
 type failoverConn struct {
 	net.Conn
 	ctx     context.Context
+	cancel  context.CancelFunc
 	dial    dial
 	onClose func()
 
@@ -30,8 +31,11 @@ type failoverConn struct {
 
 	err error
 
-	once sync.Once
-	mtx  sync.RWMutex
+	once       sync.Once
+	mtx        sync.RWMutex
+	readMtx    sync.Mutex
+	writeMtx   sync.Mutex
+	restoreMtx sync.Mutex
 }
 
 func NewFailoverConn(ctx context.Context, conn net.Conn, dial dial, onClose func()) *failoverConn {
@@ -39,29 +43,35 @@ func NewFailoverConn(ctx context.Context, conn net.Conn, dial dial, onClose func
 	for i := range BufferSize {
 		writeBuffers[i] = make([]byte, 0, 1024)
 	}
-	return &failoverConn{
+	lifetime, cancel := context.WithCancel(ctx)
+	c := &failoverConn{
 		Conn:         conn,
-		ctx:          ctx,
+		ctx:          lifetime,
+		cancel:       cancel,
 		dial:         dial,
 		readBuffer:   bytes.NewBuffer(make([]byte, 0, 1024)),
 		writeBuffers: writeBuffers,
 		onClose:      onClose,
 	}
+	context.AfterFunc(lifetime, func() { _ = c.Close() })
+	return c
 }
 
 func (c *failoverConn) Read(b []byte) (int, error) {
 	for {
+		c.readMtx.Lock()
 		c.mtx.RLock()
 		conn := c.Conn
 		n, err := c.read(conn, b)
 		if err != nil {
 			if err == SessionClosed {
-				c.err = io.EOF
-				conn.Close()
 				c.mtx.RUnlock()
-				return 0, c.err
+				c.readMtx.Unlock()
+				_ = c.Close()
+				return 0, io.EOF
 			}
 			c.mtx.RUnlock()
+			c.readMtx.Unlock()
 			err = c.awaitConn(conn)
 			if err != nil {
 				return 0, err
@@ -70,17 +80,20 @@ func (c *failoverConn) Read(b []byte) (int, error) {
 		}
 		c.readIndex++
 		c.mtx.RUnlock()
+		c.readMtx.Unlock()
 		return n, err
 	}
 }
 
 func (c *failoverConn) Write(b []byte) (int, error) {
 	for {
+		c.writeMtx.Lock()
 		c.mtx.RLock()
 		conn := c.Conn
 		n, err := c.write(conn, b)
 		if err != nil {
 			c.mtx.RUnlock()
+			c.writeMtx.Unlock()
 			err = c.awaitConn(conn)
 			if err != nil {
 				return 0, err
@@ -91,14 +104,43 @@ func (c *failoverConn) Write(b []byte) (int, error) {
 		c.writeBuffers[writeIndex] = append(c.writeBuffers[writeIndex][:0], b...)
 		c.writeIndex++
 		c.mtx.RUnlock()
+		c.writeMtx.Unlock()
 		return n, err
 	}
 }
 
-func (c *failoverConn) RestoreConn(conn net.Conn) error {
-	c.Conn.Close()
+func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
+	c.restoreMtx.Lock()
+	defer c.restoreMtx.Unlock()
+	defer func() {
+		if retErr != nil {
+			_ = conn.Close()
+		}
+	}()
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Now().Add(C.TCPConnectTimeout)); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(c.ctx, func() { _ = conn.Close() })
+	defer stop()
+	c.mtx.RLock()
+	old := c.Conn
+	c.mtx.RUnlock()
+	_ = old.Close()
+	c.readMtx.Lock()
+	defer c.readMtx.Unlock()
+	c.writeMtx.Lock()
+	defer c.writeMtx.Unlock()
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
+	if c.err != nil || c.ctx.Err() != nil {
+		if c.err != nil {
+			return c.err
+		}
+		return c.ctx.Err()
+	}
 	_, err := conn.Write([]byte{
 		byte(c.readIndex >> 24),
 		byte(c.readIndex >> 16),
@@ -128,6 +170,9 @@ func (c *failoverConn) RestoreConn(conn net.Conn) error {
 			return err
 		}
 	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
 	c.Conn = conn
 	if c.await != nil {
 		close(c.await)
@@ -137,16 +182,35 @@ func (c *failoverConn) RestoreConn(conn net.Conn) error {
 }
 
 func (c *failoverConn) Close() error {
+	c.cancel()
+	var notify func()
 	c.once.Do(func() {
 		c.mtx.RLock()
-		if c.onClose != nil {
-			c.onClose()
-		}
-		c.err = io.EOF
+		conn := c.Conn
 		c.mtx.RUnlock()
-		c.Write([]byte{})
+		// Interrupt blocked transport I/O before waiting for exclusive state.
+		_ = conn.Close()
+		c.mtx.Lock()
+		if c.err == nil {
+			c.err = io.EOF
+		}
+		notify = c.onClose
+		c.mtx.Unlock()
 	})
+	// A Scope/owner callback may re-enter Close; it runs outside Once and locks.
+	if notify != nil {
+		notify()
+	}
 	return nil
+}
+
+func (c *failoverConn) fail(err error) error {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	if c.err == nil {
+		c.err = err
+	}
+	return c.err
 }
 
 func (c *failoverConn) read(conn net.Conn, b []byte) (int, error) {
@@ -180,10 +244,13 @@ func (c *failoverConn) write(conn net.Conn, b []byte) (int, error) {
 func (c *failoverConn) awaitConn(oldConn net.Conn) error {
 	c.awaitMtx.Lock()
 	defer c.awaitMtx.Unlock()
-	if c.err != nil {
-		return c.err
+	c.mtx.RLock()
+	err, changed := c.err, c.Conn != oldConn
+	c.mtx.RUnlock()
+	if err != nil {
+		return err
 	}
-	if c.Conn != oldConn {
+	if changed {
 		return c.ctx.Err()
 	}
 	oldConn.Close()
@@ -195,38 +262,69 @@ func (c *failoverConn) awaitConn(oldConn net.Conn) error {
 			case <-c.ctx.Done():
 				return c.ctx.Err()
 			case <-timer.C:
-				c.err = SessionExpired
-				return c.err
+				return c.fail(SessionExpired)
 			default:
 			}
 			conn, err := c.dial()
 			if err != nil {
 				if err == SessionNotFound {
-					c.err = err
-					return err
+					return c.fail(err)
 				}
 				continue
 			}
 			err = c.RestoreConn(conn)
 			if err != nil {
 				if err == SessionBroken {
-					c.err = err
-					return err
+					return c.fail(err)
 				}
 				continue
 			}
 			return nil
 		}
 	} else {
-		c.await = make(chan struct{})
+		c.mtx.Lock()
+		if c.Conn != oldConn {
+			c.mtx.Unlock()
+			return c.ctx.Err()
+		}
+		if c.await == nil {
+			c.await = make(chan struct{})
+		}
+		ready := c.await
+		c.mtx.Unlock()
 		select {
-		case <-c.await:
+		case <-ready:
 		case <-timer.C:
-			c.err = SessionExpired
-			return c.err
+			return c.fail(SessionExpired)
 		case <-c.ctx.Done():
 			return c.ctx.Err()
 		}
 	}
 	return nil
+}
+
+func (c *failoverConn) LocalAddr() net.Addr {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+	return c.Conn.LocalAddr()
+}
+func (c *failoverConn) RemoteAddr() net.Addr {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+	return c.Conn.RemoteAddr()
+}
+func (c *failoverConn) SetDeadline(t time.Time) error {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+	return c.Conn.SetDeadline(t)
+}
+func (c *failoverConn) SetReadDeadline(t time.Time) error {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+	return c.Conn.SetReadDeadline(t)
+}
+func (c *failoverConn) SetWriteDeadline(t time.Time) error {
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
+	return c.Conn.SetWriteDeadline(t)
 }

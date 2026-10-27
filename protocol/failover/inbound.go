@@ -91,7 +91,15 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 	}
 	sessionUUID := request.UUID
 	h.sessionMtx.Lock(sessionUUID)
+	unlockSession := sync.OnceFunc(func() { h.sessionMtx.Unlock(sessionUUID) })
+	defer unlockSession()
 	if request.Command == CommandTCP {
+		h.mtx.RLock()
+		_, exists := h.conns[sessionUUID]
+		h.mtx.RUnlock()
+		if exists {
+			return E.New("duplicate failover session")
+		}
 		failoverConn := NewFailoverConn(ctx, conn, nil, func() {
 			h.sessionMtx.Lock(sessionUUID)
 			h.mtx.Lock()
@@ -105,7 +113,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		metadata.Inbound = h.Tag()
 		metadata.InboundType = C.TypeFailover
 		metadata.Destination = request.Destination
-		h.sessionMtx.Unlock(sessionUUID)
+		unlockSession()
 		h.router.RouteConnectionEx(ctx, failoverConn, metadata, onClose)
 		return nil
 	}
@@ -114,7 +122,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		serverConn, ok := h.conns[sessionUUID]
 		h.mtx.RUnlock()
 		if !ok {
-			h.sessionMtx.Unlock(sessionUUID)
+			unlockSession()
 			_, err := conn.Write([]byte{StatusSessionNotFound})
 			if err != nil {
 				return err
@@ -126,7 +134,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 			return err
 		}
 		err := serverConn.RestoreConn(conn)
-		h.sessionMtx.Unlock(sessionUUID)
+		unlockSession()
 		return err
 	}
 	return E.New("command ", request.Command, " not found")
