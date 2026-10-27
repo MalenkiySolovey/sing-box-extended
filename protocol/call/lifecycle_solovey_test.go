@@ -122,6 +122,66 @@ func TestCallInboundServingWorkerAndLateBridge(t *testing.T) {
 	}
 }
 
+func TestCallOutboundServingRetiresPendingAndLateBridge(t *testing.T) {
+	for _, phase := range []string{"pending", "late", "connected"} {
+		t.Run(phase, func(t *testing.T) {
+			logger := log.NewNOPFactory().Logger()
+			scope := adapter.NewScope(t.Context(), logger)
+			defer scope.Close()
+			relay := tunnel.NewRelayBridge(&lifecycleTunnel{}, "joiner", 32768, nil, logger)
+			bridge := transport.NewBridge(relay)
+			started := make(chan struct{})
+			var attempts atomic.Int32
+			o := &Outbound{ctx: t.Context(), logger: logger}
+			o.connect = func(ctx context.Context, cfg transport.Config) (*transport.Bridge, error) {
+				if attempts.Add(1) != 1 || cfg.Role != transport.RoleJoiner {
+					t.Error("duplicate or wrong-role outbound worker")
+				}
+				close(started)
+				if phase == "connected" {
+					return bridge, nil
+				}
+				<-ctx.Done()
+				if phase == "late" {
+					return bridge, nil
+				}
+				return nil, ctx.Err()
+			}
+			for _, stage := range []adapter.StartStage{adapter.StartStateInitialize, adapter.StartStatePostStart, adapter.StartStatePostStart} {
+				if err := o.Start(stage, scope); err != nil {
+					t.Fatal(err)
+				}
+			}
+			<-started
+			if phase == "connected" {
+				<-o.done
+				if got, err := o.awaitBridge(t.Context()); err != nil || got != bridge {
+					t.Fatal("connected outbound could not acquire its bridge", err)
+				}
+			}
+			stopped := make(chan struct{})
+			go func() { _ = scope.Close(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(2 * time.Second):
+				t.Fatal("pending outbound worker outlived Scope")
+			}
+			if o.ctx.Err() == nil || t.Context().Err() != nil || attempts.Load() != 1 {
+				t.Fatal("outbound retained instance lifetime or started twice")
+			}
+			if phase != "pending" && !relay.IsClosed() {
+				t.Fatal("connected or late outbound bridge survived retirement")
+			}
+			if _, err := o.awaitBridge(t.Context()); !errors.Is(err, net.ErrClosed) {
+				t.Fatal("retired outbound admitted another waiter", err)
+			}
+			if o.Start(adapter.StartStatePostStart, scope) == nil {
+				t.Fatal("retired outbound restarted")
+			}
+		})
+	}
+}
+
 type silentCallDialer struct {
 	conn    net.Conn
 	started chan struct{}
