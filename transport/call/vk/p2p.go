@@ -3,6 +3,7 @@ package vk
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sagernet/sing-box/transport/call/common"
 
 	"github.com/kulikov0/headless-client/webrtc"
 )
@@ -22,13 +23,13 @@ func NewP2PHandler(bridge *Bridge) *P2PHandler {
 func (p *P2PHandler) Init() {
 	relay := p.bridge.relay
 	if err := relay.Init(p.bridge.iceServers); err != nil {
-		p.bridge.logger.Error(fmt.Sprintf("[p2p] Init relay failed: %v", err))
+		p.bridge.logger.Error(fmt.Sprintf("[p2p] Init relay failed: %v", common.MaskError(err)))
 		return
 	}
 	p.setupCallbacks()
 	offer, err := relay.CreateOffer()
 	if err != nil {
-		p.bridge.logger.Error(fmt.Sprintf("[p2p] Create offer failed: %v", err))
+		p.bridge.logger.Error(fmt.Sprintf("[p2p] Create offer failed: %v", common.MaskError(err)))
 		return
 	}
 	p.pendingOffer = &offer
@@ -42,13 +43,13 @@ func (p *P2PHandler) Reset() {
 	p.bridge.relay = p.bridge.newRelay()
 	relay := p.bridge.relay
 	if err := relay.Init(p.bridge.iceServers); err != nil {
-		p.bridge.logger.Warn(fmt.Sprintf("[p2p] Reset init failed: %v", err))
+		p.bridge.logger.Warn(fmt.Sprintf("[p2p] Reset init failed: %v", common.MaskError(err)))
 		return
 	}
 	p.setupCallbacks()
 	offer, err := relay.CreateOffer()
 	if err != nil {
-		p.bridge.logger.Warn(fmt.Sprintf("[p2p] Reset create-offer failed: %v", err))
+		p.bridge.logger.Warn(fmt.Sprintf("[p2p] Reset create-offer failed: %v", common.MaskError(err)))
 		return
 	}
 	p.pendingOffer = &offer

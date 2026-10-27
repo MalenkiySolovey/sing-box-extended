@@ -2,6 +2,7 @@ package dion
 
 import (
 	"fmt"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -253,7 +254,7 @@ func (c *Call) Start() error {
 			entry.UsernameFragment = *cand.UsernameFragment
 		}
 		if err := signaling.SendICECandidates([]ICECandidateJSON{entry}); err != nil {
-			c.cfg.Logger.Warn(fmt.Sprintf("[ice] SendICECandidates: %v", err))
+			c.cfg.Logger.Warn(fmt.Sprintf("[ice] SendICECandidates: %v", common.MaskError(err)))
 		}
 	}
 	flushPending := func() {
@@ -359,18 +360,18 @@ func (c *Call) Start() error {
 
 	if c.cfg.Role == RoleCreator {
 		if err := signaling.SendScreenSharingSwitchOn(); err != nil {
-			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendScreenSharingSwitchOn: %v", err))
+			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendScreenSharingSwitchOn: %v", common.MaskError(err)))
 		} else {
 			c.cfg.Logger.Debug("[call] sent screensharing_switch_on")
 		}
 		if err := signaling.SendScreensharingQualityChange("good"); err != nil {
-			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendScreensharingQualityChange: %v", err))
+			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendScreensharingQualityChange: %v", common.MaskError(err)))
 		} else {
 			c.cfg.Logger.Debug("[call] sent screensharing_quality_change=good")
 		}
 	} else {
 		if err := signaling.SendCamStateChange(true); err != nil {
-			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendCamStateChange: %v", err))
+			c.cfg.Logger.Warn(fmt.Sprintf("[call] SendCamStateChange: %v", common.MaskError(err)))
 		} else {
 			c.cfg.Logger.Debug("[call] sent cam_state_change=true")
 		}
@@ -385,7 +386,7 @@ func (c *Call) Start() error {
 		case state := <-iceDead:
 			c.cfg.Logger.Debug(fmt.Sprintf("[call] ICE went to %s", state.String()))
 		case err := <-readLoopDone:
-			c.cfg.Logger.Debug(fmt.Sprintf("[call] read loop ended: %v", err))
+			c.cfg.Logger.Debug(fmt.Sprintf("[call] read loop ended: %v", common.MaskError(err)))
 		}
 	}()
 
@@ -440,7 +441,7 @@ func (c *Call) handleSpeakerJoined(params SpeakerJoinedParams) {
 	c.cfg.Logger.Debug(fmt.Sprintf("[call] speaker_joined session_id=%s name=%q cam=%v", params.SessionID, params.Name, params.CamState))
 	for _, staleID := range toKick {
 		if err := c.signaling.SendKickOne(staleID); err != nil {
-			c.cfg.Logger.Debug(fmt.Sprintf("[call] SendKickOne(%s): %v", staleID, err))
+			c.cfg.Logger.Debug(fmt.Sprintf("[call] SendKickOne(%s): %v", staleID, common.MaskError(err)))
 			continue
 		}
 		c.cfg.Logger.Debug(fmt.Sprintf("[call] kicked stale peer session_id=%s for newcomer=%s", staleID, params.SessionID))
@@ -524,7 +525,7 @@ func (c *Call) handleConfSpeakersState(response ConfSpeakersStateResponse) {
 func (c *Call) discoverPeersAndSubscribe() {
 	time.Sleep(500 * time.Millisecond)
 	if err := c.signaling.SendConfSpeakersState(DefaultConfSpeakersStateRequest()); err != nil {
-		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendConfSpeakersState: %v", err))
+		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendConfSpeakersState: %v", common.MaskError(err)))
 	}
 }
 
@@ -679,7 +680,7 @@ func (c *Call) runStatReporter() {
 	case <-time.After(1500 * time.Millisecond):
 	}
 	if err := c.signaling.SendPCIceStat(); err != nil {
-		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendPCIceStat: %v", err))
+		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendPCIceStat: %v", common.MaskError(err)))
 	} else {
 		c.cfg.Logger.Debug("[call] sent pc_ice_stat")
 	}
@@ -714,7 +715,7 @@ func (c *Call) sendStatReport() {
 	report.Video.Out = outStat
 	report.Video.OutV2 = []ClientStatVideoOut{outStat}
 	if err := c.signaling.SendClientStatZip(report); err != nil {
-		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendClientStatZip: %v", err))
+		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendClientStatZip: %v", common.MaskError(err)))
 	}
 }
 

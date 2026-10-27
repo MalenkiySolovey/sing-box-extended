@@ -365,7 +365,7 @@ func DialSignaling(wssURL string, opts SignalingDialOptions) (*SignalingClient, 
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		return nil, fmt.Errorf("ws dial: %w status=%d url=%s", err, status, wssURL)
+		return nil, fmt.Errorf("ws dial: %w status=%d", err, status)
 	}
 	if resp != nil {
 		log.Debug(fmt.Sprintf("dion: ws dial status=%d", resp.StatusCode))
@@ -509,7 +509,7 @@ func (c *SignalingClient) ReadLoop() error {
 		}
 		var frame Frame
 		if err := json.Unmarshal(raw, &frame); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: drop non-json frame: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: drop non-json frame: %v", common.MaskError(err)))
 			continue
 		}
 		if frame.Error != nil {
@@ -589,7 +589,7 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerYouJoined:
 		var youJoined YouJoinedParams
 		if err := json.Unmarshal(frame.Params, &youJoined); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode you_joined: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode you_joined: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnYouJoined != nil {
@@ -602,12 +602,12 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerSDPAnswer:
 		var answer SDPAnswerParams
 		if err := json.Unmarshal(frame.Params, &answer); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode sdp_answer: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode sdp_answer: %v", common.MaskError(err)))
 			return
 		}
 		var inner SDPEnvelope
 		if err := ZipDecode(answer.Answer, &inner); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode sdp_answer envelope: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode sdp_answer envelope: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnSDPAnswer != nil {
@@ -616,7 +616,7 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerSpeakerJoined:
 		var joined SpeakerJoinedParams
 		if err := json.Unmarshal(frame.Params, &joined); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode speaker_joined: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode speaker_joined: %v", common.MaskError(err)))
 			return
 		}
 		joined.Extra = frame.Params
@@ -626,7 +626,7 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerSpeakerDisconnected:
 		var left SpeakerDisconnectedParams
 		if err := json.Unmarshal(frame.Params, &left); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode speaker_disconnected: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode speaker_disconnected: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnSpeakerDisconnected != nil {
@@ -635,7 +635,7 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerSpeakerCamStateChanged:
 		var changed SpeakerCamStateChangedParams
 		if err := json.Unmarshal(frame.Params, &changed); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode speaker_cam_state_changed: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode speaker_cam_state_changed: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnSpeakerCamStateChanged != nil {
@@ -644,7 +644,7 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerSpeakerMicStateChanged:
 		var changed SpeakerMicStateChangedParams
 		if err := json.Unmarshal(frame.Params, &changed); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode speaker_mic_state_changed: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode speaker_mic_state_changed: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnSpeakerMicStateChanged != nil {
@@ -653,12 +653,12 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerConfSpeakersState:
 		var encoded string
 		if err := json.Unmarshal(frame.Params, &encoded); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode conf_speakers_state envelope: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode conf_speakers_state envelope: %v", common.MaskError(err)))
 			return
 		}
 		var response ConfSpeakersStateResponse
 		if err := ZipDecode(encoded, &response); err != nil {
-			c.logger.Debug(fmt.Sprintf("dion: decode conf_speakers_state body: %v", err))
+			c.logger.Debug(fmt.Sprintf("dion: decode conf_speakers_state body: %v", common.MaskError(err)))
 			return
 		}
 		if c.OnConfSpeakersState != nil {

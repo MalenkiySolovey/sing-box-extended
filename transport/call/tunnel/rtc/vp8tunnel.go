@@ -260,11 +260,11 @@ func (t *VP8DataTunnel) writerLoop() {
 			}
 			if t.WriteFrame != nil {
 				if err := t.WriteFrame(sample); err != nil {
-					t.logger.Debug(fmt.Sprintf("vp8tunnel: WriteFrame error: %v", err))
+					t.logger.Debug(fmt.Sprintf("vp8tunnel: WriteFrame error: %v", common.MaskError(err)))
 					return
 				}
 			} else if err := t.track.WriteSample(media.Sample{Data: sample, Duration: sampleInterval}); err != nil {
-				t.logger.Debug(fmt.Sprintf("vp8tunnel: WriteSample error: %v", err))
+				t.logger.Debug(fmt.Sprintf("vp8tunnel: WriteSample error: %v", common.MaskError(err)))
 				return
 			}
 			n := t.sentFrames.Add(1)

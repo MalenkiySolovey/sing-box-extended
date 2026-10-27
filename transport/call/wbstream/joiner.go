@@ -61,7 +61,7 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 		Reliable    *bool  `json:"reliable"`
 	}
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
-		j.logger.Error(fmt.Sprintf("wbstream-joiner: failed to parse params: %v", err))
+		j.logger.Error(fmt.Sprintf("wbstream-joiner: failed to parse params: %v", common.MaskError(err)))
 		return
 	}
 	if params.RoomID == "" {
@@ -73,13 +73,13 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 	}
 	reliable := params.Reliable != nil && *params.Reliable
 	httpClient := j.makeHTTPClient()
-	j.logger.Info(fmt.Sprintf("wbstream-joiner: room=%s name=%s vp8Fps=%d vp8Batch=%d dualTrack=%v", params.RoomID, params.DisplayName, params.VP8FPS, params.VP8Batch, params.DualTrack))
+	j.logger.Info(fmt.Sprintf("wbstream-joiner: vp8Fps=%d vp8Batch=%d dualTrack=%v", params.VP8FPS, params.VP8Batch, params.DualTrack))
 	obf, err := tunnel.NewTunnelObfuscator(tunnel.DeriveSecretFromJoinLink(params.RoomID))
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("wbstream-joiner: obfuscator init failed: %v", err))
+		j.logger.Error(fmt.Sprintf("wbstream-joiner: obfuscator init failed: %v", common.MaskError(err)))
 		return
 	}
-	j.logger.Debug(fmt.Sprintf("wbstream-joiner: obf key-source=%q localEpoch=0x%08x", params.RoomID, obf.LocalEpoch()))
+	j.logger.Debug(fmt.Sprintf("wbstream-joiner: obf localEpoch=0x%08x", obf.LocalEpoch()))
 	var configureSettingEngine func(*webrtc.SettingEngine)
 	if j.PCConfig != nil {
 		configureSettingEngine = j.PCConfig.ConfigureSettingEngine
@@ -87,7 +87,7 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 	var attempt atomic.Int32
 	j.logger.Info("wbstream-joiner: connecting")
 	if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, configureSettingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
-		j.logger.Error(fmt.Sprintf("wbstream-joiner: %v", err))
+		j.logger.Error(fmt.Sprintf("wbstream-joiner: %v", common.MaskError(err)))
 		return
 	}
 	for {
@@ -105,7 +105,7 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 		}
 		j.logger.Info(fmt.Sprintf("wbstream-joiner: reconnect attempt #%d", attempt.Load()))
 		if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, configureSettingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
-			j.logger.Warn(fmt.Sprintf("wbstream-joiner: %v, will retry", err))
+			j.logger.Warn(fmt.Sprintf("wbstream-joiner: %v, will retry", common.MaskError(err)))
 		}
 	}
 }

@@ -244,7 +244,7 @@ func (c *Client) PingLoop() {
 			return
 		}
 		if err := c.SendPing(); err != nil {
-			c.logger.Warn(fmt.Sprintf("[lk] ping send failed: %v", err))
+			c.logger.Warn(fmt.Sprintf("[lk] ping send failed: %v", common.MaskError(err)))
 			return
 		}
 		sentN++
@@ -367,17 +367,17 @@ func (c *Client) buildPeerConnections() error {
 func (c *Client) handleSignal(data []byte) {
 	ev, err := c.codec.Decode(data)
 	if err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] decode signal: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] decode signal: %v", common.MaskError(err)))
 		return
 	}
 	switch ev.Kind {
 	case EventJoin:
 		c.join = *ev.Join
-		c.logger.Info(fmt.Sprintf("[lk] join: room=%s participant=%s subscriberPrimary=%v iceServers=%d pingTimeout=%ds pingInterval=%ds",
-			c.join.RoomName, c.join.ParticipantID, c.join.SubscriberPrimary, len(c.join.ICEServers),
+		c.logger.Info(fmt.Sprintf("[lk] join: participant=%s subscriberPrimary=%v iceServers=%d pingTimeout=%ds pingInterval=%ds",
+			c.join.ParticipantID, c.join.SubscriberPrimary, len(c.join.ICEServers),
 			c.join.PingTimeoutSec, c.join.PingIntervalSec))
 		if err := c.buildPeerConnections(); err != nil {
-			c.logger.Error(fmt.Sprintf("[lk] %v", err))
+			c.logger.Error(fmt.Sprintf("[lk] %v", common.MaskError(err)))
 			return
 		}
 		c.joinedOnce.Do(func() { close(c.joined) })
@@ -422,7 +422,7 @@ func (c *Client) applyPubAnswer(sdp string) {
 		return
 	}
 	if err := c.pubPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp}); err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] set pub remote answer: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] set pub remote answer: %v", common.MaskError(err)))
 		return
 	}
 	c.pubRemoteSet = true
@@ -441,7 +441,7 @@ func (c *Client) applySubOfferAndAnswer(sdp string) {
 	subPC := c.subPC
 	if err := subPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
 		c.subMu.Unlock()
-		c.logger.Warn(fmt.Sprintf("[lk] set sub remote offer: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] set sub remote offer: %v", common.MaskError(err)))
 		return
 	}
 	c.subRemoteSet = true
@@ -450,22 +450,22 @@ func (c *Client) applySubOfferAndAnswer(sdp string) {
 
 	answer, err := subPC.CreateAnswer(nil)
 	if err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] create sub answer: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] create sub answer: %v", common.MaskError(err)))
 		return
 	}
 	if err := subPC.SetLocalDescription(answer); err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] set sub local answer: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] set sub local answer: %v", common.MaskError(err)))
 		return
 	}
 	if err := c.SendAnswer(answer.SDP); err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] send answer: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] send answer: %v", common.MaskError(err)))
 	}
 }
 
 func (c *Client) drainPendingLocked(pc *webrtc.PeerConnection, pending *[]webrtc.ICECandidateInit) {
 	for _, ic := range *pending {
 		if err := pc.AddICECandidate(ic); err != nil {
-			c.logger.Warn(fmt.Sprintf("[lk] add pending candidate: %v", err))
+			c.logger.Warn(fmt.Sprintf("[lk] add pending candidate: %v", common.MaskError(err)))
 		}
 	}
 	*pending = nil
@@ -492,6 +492,6 @@ func (c *Client) applyRemoteTrickle(m TrickleEvent) {
 		return
 	}
 	if err := (*pc).AddICECandidate(m.Candidate); err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] add candidate: %v", err))
+		c.logger.Warn(fmt.Sprintf("[lk] add candidate: %v", common.MaskError(err)))
 	}
 }

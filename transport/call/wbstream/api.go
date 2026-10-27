@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/sagernet/sing-box/transport/call/common"
+
 	"github.com/kulikov0/headless-client"
 )
 
@@ -124,7 +126,7 @@ func RegisterGuest(client *http.Client, displayName string) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("guest-register: status %d: %s", resp.StatusCode, string(raw))
+		return "", fmt.Errorf("guest-register: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var r guestRegisterResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -151,7 +153,7 @@ func CreateRoom(client *http.Client, accessToken string) (string, error) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("create-room: status %d: %s", resp.StatusCode, string(raw))
+		return "", fmt.Errorf("create-room: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var r createRoomResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -175,7 +177,7 @@ func JoinRoom(client *http.Client, accessToken, roomID string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("join-room: status %d: %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("join-room: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	return nil
 }
@@ -195,7 +197,7 @@ func GetConnectionDetails(client *http.Client, accessToken, roomID, displayName 
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("connection-details: status %d: %s", resp.StatusCode, string(raw))
+		return "", "", fmt.Errorf("connection-details: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var r connectionDetailsResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -249,17 +251,17 @@ func RefreshAccessToken(client *http.Client, cookieHeader, deviceID string) (str
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("slide-v3: status %d: %s", resp.StatusCode, string(raw))
+		return "", nil, fmt.Errorf("slide-v3: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var r slideV3Response
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return "", nil, fmt.Errorf("slide-v3 decode: %w", err)
 	}
 	if r.Error != "" {
-		return "", nil, fmt.Errorf("slide-v3: %s", string(raw))
+		return "", nil, fmt.Errorf("slide-v3: %s", common.BodySnippet(raw))
 	}
 	if r.Payload.AccessToken == "" {
-		return "", nil, fmt.Errorf("slide-v3: empty access_token in response: %s", string(raw))
+		return "", nil, fmt.Errorf("slide-v3: empty access_token in response: %s", common.BodySnippet(raw))
 	}
 	if err := confirmRefresh(client, mergeCookies(cookieHeader, rotated), deviceID, r.Payload.Sticker); err != nil {
 		return "", nil, err
@@ -295,14 +297,14 @@ func confirmRefresh(client *http.Client, cookieHeader, deviceID, sticker string)
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("slide-v3-confirm: status %d: %s", resp.StatusCode, string(raw))
+		return fmt.Errorf("slide-v3-confirm: status %d: %s", resp.StatusCode, common.BodySnippet(raw))
 	}
 	var confirmed slideV3ConfirmResponse
 	if err := json.Unmarshal(raw, &confirmed); err != nil {
 		return fmt.Errorf("slide-v3-confirm decode: %w", err)
 	}
 	if confirmed.Error != "" {
-		return fmt.Errorf("slide-v3-confirm: %s", confirmed.Error)
+		return fmt.Errorf("slide-v3-confirm: request rejected")
 	}
 	return nil
 }
@@ -354,7 +356,7 @@ func SetParticipantPermissions(client *http.Client, accessToken, roomID, partici
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("set-permissions %s -> %d %s", participantID, resp.StatusCode, string(respBody))
+		return fmt.Errorf("set-permissions %s -> %d %s", participantID, resp.StatusCode, common.BodySnippet(respBody))
 	}
 	return nil
 }
@@ -377,7 +379,7 @@ func KickParticipant(client *http.Client, accessToken, roomID, participantID str
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("kick %s -> %d %s", participantID, resp.StatusCode, string(body))
+		return fmt.Errorf("kick %s -> %d %s", participantID, resp.StatusCode, common.BodySnippet(body))
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -156,7 +155,7 @@ func (b *Bridge) handleVKMessage(raw []byte) {
 			if len(snippet) > 1000 {
 				snippet = append(snippet[:1000], '.', '.', '.')
 			}
-			b.logger.Debug(fmt.Sprintf("[vk-ws]    unhandled: %s", string(snippet)))
+			b.logger.Debug(fmt.Sprintf("[vk-ws]    unhandled: %s", common.BodySnippet(snippet)))
 		}
 	case "response":
 		seq, _ := msg["sequence"].(float64)
@@ -164,7 +163,7 @@ func (b *Bridge) handleVKMessage(raw []byte) {
 		if len(snippet) > 1000 {
 			snippet = append(snippet[:1000], '.', '.', '.')
 		}
-		b.logger.Debug(fmt.Sprintf("[vk-ws] <- response seq=%d: %s", int(seq), string(snippet)))
+		b.logger.Debug(fmt.Sprintf("[vk-ws] <- response seq=%d: %s", int(seq), common.BodySnippet(snippet)))
 	case "error":
 		errMsg, _ := msg["message"].(string)
 		errCode, _ := msg["error"].(string)
@@ -252,8 +251,7 @@ func (b *Bridge) readLoop() error {
 }
 
 func (b *Bridge) Run(ctx context.Context, callInfo *CallInfo, cookieStr string, cfg VKConfig) {
-	b.logger.Info(fmt.Sprintf("CALL CREATED join_link=%s turn=%s protocol=v%s sdk=%s",
-		callInfo.JoinLink, strings.Join(callInfo.TurnServer.URLs, ", "), cfg.ProtocolVersion, cfg.SDKVersion))
+	b.logger.Info(fmt.Sprintf("CALL CREATED protocol=v%s sdk=%s", cfg.ProtocolVersion, cfg.SDKVersion))
 	b.iceServers = buildWebRTCICEServers(BuildICEServers(callInfo))
 	wtEndpoint := callInfo.WtEndpoint
 	capabilities := "2F7F"
@@ -294,7 +292,7 @@ func (b *Bridge) Run(ctx context.Context, callInfo *CallInfo, cookieStr string, 
 		}
 		joinResp, rerr := authAndJoin(b.dialer, cookieStr, callInfo.OKJoinLink, cfg)
 		if rerr != nil {
-			b.logger.Warn(fmt.Sprintf("[rejoin] Failed: %v, retrying in 5s...", rerr))
+			b.logger.Warn(fmt.Sprintf("[rejoin] Failed: %v, retrying in 5s...", common.MaskError(rerr)))
 			if !common.WaitContext(ctx, 5*time.Second) {
 				return
 			}

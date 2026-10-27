@@ -54,7 +54,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 		}
 		var result map[string]any
 		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, fmt.Errorf("json: %w (body: %s)", err, string(body[:minInt(len(body), 200)]))
+			return nil, fmt.Errorf("json: %w (body: %s)", err, common.BodySnippet(body))
 		}
 		return result, nil
 	}
@@ -75,7 +75,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	dataMap, _ := anonResp["data"].(map[string]any)
 	accessToken, _ := dataMap["access_token"].(string)
 	if accessToken == "" {
-		return "", fmt.Errorf("empty access_token: %v", anonResp)
+		return "", fmt.Errorf("empty access_token")
 	}
 	logger.Debug("vk-auth: anon token OK")
 	auth := map[string]string{"Authorization": "Bearer " + accessToken}
@@ -125,7 +125,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 			if int(errCode) == 14 {
 				captchaErr := parseVKCaptchaError(errObj)
 				if captchaErr == nil {
-					return "", fmt.Errorf("captcha error missing fields: %v", errObj)
+					return "", fmt.Errorf("captcha error missing fields")
 				}
 				logger.Info("vk-auth: captcha required")
 				proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
@@ -156,11 +156,11 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 				}
 				continue
 			}
-			return "", fmt.Errorf("VK API error: %v", errObj)
+			return "", fmt.Errorf("VK API error code %d", int(errCode))
 		}
 		respMap, ok := callResp["response"].(map[string]any)
 		if !ok {
-			return "", fmt.Errorf("unexpected response: %v", callResp)
+			return "", fmt.Errorf("unexpected response shape")
 		}
 		callToken, _ = respMap["token"].(string)
 		apiBaseURL, _ = respMap["api_base_url"].(string)
@@ -193,7 +193,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	}
 	sessionKey, _ := okResp["session_key"].(string)
 	if sessionKey == "" {
-		return "", fmt.Errorf("missing session_key: %v", okResp)
+		return "", fmt.Errorf("missing session_key")
 	}
 	logger.Debug("vk-auth: OK.ru session OK")
 	finalJoinLink := okJoinLink

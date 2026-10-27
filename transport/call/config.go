@@ -2,7 +2,6 @@ package call
 
 import (
 	"context"
-	"fmt"
 	"net"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -60,8 +59,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			if err != nil {
 				return nil, err
 			}
-			log.Notice(fmt.Sprintf("call[telemost]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
+			log.Notice("call[telemost]: platform relay connected")
+			return &Bridge{relay: relay, joinLink: joinLink}, nil
 		case RoleJoiner:
 			relay, err := telemost.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
@@ -76,8 +75,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			if err != nil {
 				return nil, err
 			}
-			log.Notice(fmt.Sprintf("call[wbstream]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
+			log.Notice("call[wbstream]: platform relay connected")
+			return &Bridge{relay: relay, joinLink: joinLink}, nil
 		case RoleJoiner:
 			relay, err := wbstream.ConnectJoiner(ctx, cfg.JoinLink, "", cfg.Mode, readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
@@ -92,8 +91,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			if err != nil {
 				return nil, err
 			}
-			log.Notice(fmt.Sprintf("call[vk]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
+			log.Notice("call[vk]: platform relay connected")
+			return &Bridge{relay: relay, joinLink: joinLink}, nil
 		case RoleJoiner:
 			relay, err := vk.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
@@ -117,8 +116,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			if err != nil {
 				return nil, err
 			}
-			log.Notice(fmt.Sprintf("call[dion]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
+			log.Notice("call[dion]: platform relay connected")
+			return &Bridge{relay: relay, joinLink: joinLink}, nil
 		case RoleJoiner:
 			relay, err := dion.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
@@ -131,8 +130,13 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 }
 
 type Bridge struct {
-	relay *tunnel.RelayBridge
+	relay    *tunnel.RelayBridge
+	joinLink string
 }
+
+// JoinLink is private runtime material for a trusted owner operation. It must
+// not be serialized in ordinary state or logs.
+func (b *Bridge) JoinLink() string { return b.joinLink }
 
 func NewBridge(relay *tunnel.RelayBridge) *Bridge {
 	return &Bridge{relay: relay}

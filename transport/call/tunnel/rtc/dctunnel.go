@@ -3,6 +3,7 @@ package rtc
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"io"
 	"math"
 	"sync"
@@ -42,7 +43,7 @@ func NewDCTunnel(dc *webrtc.DataChannel, obf *tunnel.TunnelObfuscator, readBuf i
 	t := &DCTunnel{dc: dc, obf: obf, readBuf: readBuf, logger: logger}
 	raw, err := dc.Detach()
 	if err != nil {
-		logger.Warn(fmt.Sprintf("dctunnel: detach failed, using callback mode: %v", err))
+		logger.Warn(fmt.Sprintf("dctunnel: detach failed, using callback mode: %v", common.MaskError(err)))
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			t.deliverMessage(msg.Data)
 		})
@@ -67,7 +68,7 @@ func NewDCTunnelFromRaw(dc *webrtc.DataChannel, raw datachannel.ReadWriteCloser,
 func NewChunkedDCTunnel(readRaw datachannel.ReadWriteCloser, writeDC *webrtc.DataChannel, obf *tunnel.TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
 	writeRaw, err := writeDC.Detach()
 	if err != nil {
-		logger.Error(fmt.Sprintf("dctunnel: write DC detach failed: %v", err))
+		logger.Error(fmt.Sprintf("dctunnel: write DC detach failed: %v", common.MaskError(err)))
 		return nil
 	}
 	t := &DCTunnel{raw: readRaw, writeRaw: writeRaw, obf: obf, readBuf: readBuf, logger: logger, chunked: true}
@@ -116,7 +117,7 @@ func (t *DCTunnel) readLoop() {
 		n, isString, err := t.raw.ReadDataChannel(buf)
 		if err != nil {
 			if err != io.EOF {
-				t.logger.Warn(fmt.Sprintf("dctunnel: read error: %v", err))
+				t.logger.Warn(fmt.Sprintf("dctunnel: read error: %v", common.MaskError(err)))
 			}
 			if t.onClose != nil {
 				t.onClose()

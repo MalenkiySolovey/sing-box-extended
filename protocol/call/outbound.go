@@ -2,6 +2,7 @@ package call
 
 import (
 	"context"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"net"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -69,7 +70,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			Logger:       logger,
 		})
 		if err != nil {
-			logger.ErrorContext(ctx, err)
+			logger.ErrorContext(ctx, common.MaskError(err))
 			return
 		}
 		ob.bridge = bridge
