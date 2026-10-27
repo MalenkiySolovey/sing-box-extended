@@ -21,6 +21,9 @@ func (d *Dialer) Dial(network, address string) (net.Conn, error) {
 }
 
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	inConn, outConn := net.Pipe()
 	var metadata adapter.InboundContext
 	if streamContext, ok := ctx.(streamContext); ok {
