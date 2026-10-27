@@ -41,6 +41,12 @@ type clientOwnedConn struct {
 	err       error
 }
 
+// Half-close belongs to the underlying protocol stream and must not retire
+// the whole client-owned connection or discard its remaining read/write side.
+func (c *clientOwnedConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+func (c *clientOwnedConn) CloseRead() error { return closeRead(c.Conn) }
+
 func (c *clientOwnedConn) Close() error {
 	c.once.Do(func() {
 		c.err = c.Conn.Close()

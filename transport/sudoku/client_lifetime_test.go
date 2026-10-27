@@ -2,17 +2,52 @@ package sudoku
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 type pendingClientDialer struct {
 	entered  chan struct{}
 	attempts atomic.Int32
+}
+
+type halfCloseClientConn struct {
+	net.Conn
+	readError, writeError error
+	reads, writes, closes int
+}
+
+func (c *halfCloseClientConn) CloseRead() error  { c.reads++; return c.readError }
+func (c *halfCloseClientConn) CloseWrite() error { c.writes++; return c.writeError }
+func (c *halfCloseClientConn) Close() error      { c.closes++; return nil }
+
+func TestSudokuOwnedClientConnPreservesHalfClose(t *testing.T) {
+	client, err := NewClient(ClientOptions{Config: ProtocolConfig{Key: "synthetic-client-only", DisableHTTPMask: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	raw := &halfCloseClientConn{readError: errors.New("read-side"), writeError: errors.New("write-side")}
+	conn, err := client.own(raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(N.CloseWrite(conn), raw.writeError) || raw.writes != 1 || raw.reads != 0 || raw.closes != 0 {
+		t.Fatal("owned stream changed write-side closure semantics")
+	}
+	if !errors.Is(N.CloseRead(conn), raw.readError) || raw.reads != 1 || raw.writes != 1 || raw.closes != 0 {
+		t.Fatal("owned stream changed read-side closure semantics")
+	}
+	client.Close()
+	if raw.closes != 1 {
+		t.Fatal("half-closed stream escaped owner retirement")
+	}
 }
 
 func (d *pendingClientDialer) DialContext(ctx context.Context, _ string, _ M.Socksaddr) (net.Conn, error) {
