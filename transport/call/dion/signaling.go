@@ -359,7 +359,7 @@ func DialSignaling(wssURL string, opts SignalingDialOptions) (*SignalingClient, 
 	if log == nil {
 		log = logger.NOP()
 	}
-	conn, resp, err := dialer.Dial(wssURL, headers)
+	conn, resp, err := dialer.DialContext(common.ContextForDialer(opts.Dialer), wssURL, headers)
 	if err != nil {
 		status := 0
 		if resp != nil {
@@ -513,7 +513,7 @@ func (c *SignalingClient) ReadLoop() error {
 			continue
 		}
 		if frame.Error != nil {
-			c.logger.Debug(fmt.Sprintf("dion: <- %s ERROR code=%d message=%q", frame.Method, frame.Error.Code, frame.Error.Message))
+			c.logger.Debug(fmt.Sprintf("dion: signaling error code=%d", frame.Error.Code))
 		}
 		c.dispatch(frame)
 	}
