@@ -58,4 +58,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0039 | Validate Mieru outbound options before runtime/dialer construction and omit arbitrary option values from diagnostics | ./protocol/mieru -run TestMieru |
 
+| EXTENDED-0040 | Validate required TrustTunnel remote/authentication fields and nonnegative multiplex limits before dialer construction | ./protocol/trusttunnel ./transport/trusttunnel -run TestTrustTunnel |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
