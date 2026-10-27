@@ -33,6 +33,8 @@ type Inbound struct {
 	proxy    *mtglib.Proxy
 	options  mtglib.ProxyOpts
 	access   sync.Mutex
+	routing  sync.RWMutex
+	retired  bool
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MTProxyInboundOptions) (adapter.Inbound, error) {
@@ -106,16 +108,32 @@ func (n *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	}
 	n.access.Lock()
 	defer n.access.Unlock()
+	n.routing.RLock()
+	retired := n.retired
+	n.routing.RUnlock()
+	if retired || scope.Context().Err() != nil {
+		return net.ErrClosed
+	}
+	if n.proxy != nil {
+		return nil
+	}
 	if len(n.options.Secrets) == 0 {
 		n.logger.Info("mtproxy listener is inactive: no users")
 		return nil
 	}
+	n.ctx = scope.Context()
+	n.options.Network = NewNetworkAdapter(n.ctx, NewDialer(n.newConnection))
 	proxy, err := mtglib.NewProxy(n.options)
 	if err != nil {
 		return E.New("cannot create a proxy: ", err)
 	}
 	n.proxy = proxy
 	scope.Add(func() error {
+		// Drain any callback already entering the router and reject late MTG
+		// background callbacks before its asynchronous Shutdown returns.
+		n.routing.Lock()
+		n.retired = true
+		n.routing.Unlock()
 		proxy.Shutdown()
 		return nil
 	})
@@ -154,6 +172,15 @@ func (h *Inbound) UpdateUsers(users []option.MTProxyUser) {
 }
 
 func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	h.routing.RLock()
+	defer h.routing.RUnlock()
+	if h.retired || h.ctx.Err() != nil || ctx.Err() != nil {
+		_ = conn.Close()
+		if onClose != nil {
+			onClose(net.ErrClosed)
+		}
+		return
+	}
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
 	h.logger.InfoContext(ctx, "[", metadata.User, "] inbound connection to ", metadata.Destination)
