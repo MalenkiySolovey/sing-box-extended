@@ -111,6 +111,8 @@ func TestFailoverRejectedLegReleasesSessionAdmission(t *testing.T) {
 		t.Run(map[byte]string{255: "unknown-command", CommandReconnect: "failed-status-write"}[command], func(t *testing.T) {
 			id := uuid.Must(uuid.NewV4())
 			h := &Inbound{sessionMtx: kmutex.New[uuid.UUID](), conns: map[uuid.UUID]*inboundSession{id: {destination: Destination}}, connections: make(map[*inboundLeg]struct{}), serving: context.Background()}
+			router := NewRouter(nil, log.NewNOPFactory().Logger(), h.connHandler)
+			var callbacks atomic.Int32
 			var request bytes.Buffer
 			if err := WriteRequest(&request, &Request{UUID: id, Command: command, Destination: Destination}); err != nil {
 				t.Fatal(err)
@@ -119,10 +121,13 @@ func TestFailoverRejectedLegReleasesSessionAdmission(t *testing.T) {
 				done := make(chan struct{})
 				go func() {
 					conn := &admissionFailoverConn{Reader: bytes.NewReader(request.Bytes())}
-					_ = h.connHandler(context.Background(), conn, adapter.InboundContext{Destination: Destination}, nil)
+					router.RouteConnectionEx(context.Background(), conn, adapter.InboundContext{Destination: Destination}, func(error) { callbacks.Add(1) })
 					close(done)
 				}()
 				failoverMustFinish(t, done)
+			}
+			if callbacks.Load() != 2 {
+				t.Fatal("rejected legs repeated or lost their owner callbacks")
 			}
 		})
 	}
