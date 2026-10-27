@@ -5,10 +5,59 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httptrace"
+	"sync"
 	"testing"
 	"time"
 )
+
+type retiringResponseWriter struct {
+	*httptest.ResponseRecorder
+	flushing, interrupted, release chan struct{}
+}
+
+func (w *retiringResponseWriter) Flush() {
+	close(w.flushing)
+	<-w.release
+}
+
+func (w *retiringResponseWriter) SetWriteDeadline(time.Time) error {
+	close(w.interrupted)
+	return nil
+}
+
+func TestTrustTunnelServerHandlerRetirementJoinsAdmittedFlush(t *testing.T) {
+	writer := &retiringResponseWriter{httptest.NewRecorder(), make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	release := sync.OnceFunc(func() { close(writer.release) })
+	defer release()
+	conn := &httpConn{writer: writer, flusher: writer, created: make(chan struct{}), done: make(chan struct{})}
+	written := make(chan error, 1)
+	go func() { written <- conn.writeChunks([]byte("synthetic-payload")) }()
+	<-writer.flushing
+	closed := make(chan struct{})
+	go func() { _ = conn.Close(); close(closed) }()
+	select {
+	case <-writer.interrupted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server retirement did not interrupt its admitted writer")
+	}
+	select {
+	case <-conn.done:
+		t.Fatal("handler returned while its ResponseWriter was still flushing")
+	default:
+	}
+	release()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server retirement did not join its admitted flush")
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
+	}
+	<-conn.done
+}
 
 type enteredPipeWriter struct {
 	*io.PipeWriter
