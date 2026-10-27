@@ -1,8 +1,10 @@
 package dion
 
 import (
+	"context"
 	"fmt"
 	"github.com/sagernet/sing-box/transport/call/common"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +66,11 @@ type PeerEntry struct {
 
 type Call struct {
 	cfg         CallConfig
+	ctx         context.Context
+	cancel      context.CancelFunc
+	lifetimeMu  sync.Mutex
+	started     bool
+	peerWorkers sync.WaitGroup
 	signaling   *SignalingClient
 	peer        *PionPeer
 	sendTrack   *webrtc.TrackLocalStaticSample
@@ -85,6 +92,7 @@ type Call struct {
 	OnRemoteSDP   func(sdp string)
 
 	done      chan struct{}
+	doneOnce  sync.Once
 	closeOnce sync.Once
 }
 
@@ -108,8 +116,11 @@ func NewCall(cfg CallConfig) *Call {
 		}
 		freeMids = append(freeMids, "0")
 	}
+	ctx, cancel := context.WithCancel(common.ContextForDialer(cfg.Dialer))
 	return &Call{
 		cfg:        cfg,
+		ctx:        ctx,
+		cancel:     cancel,
 		peersByID:  make(map[string]*PeerEntry),
 		subscribed: make(map[string]bool),
 		peerToMid:  make(map[string]string),
@@ -122,7 +133,28 @@ func (c *Call) Done() <-chan struct{} { return c.done }
 
 func (c *Call) SessionID() string { return c.mySessionID }
 
-func (c *Call) Start() error {
+func (c *Call) Start() (startErr error) {
+	c.lifetimeMu.Lock()
+	if c.started || c.ctx.Err() != nil {
+		if !c.started {
+			c.doneOnce.Do(func() { close(c.done) })
+		}
+		c.lifetimeMu.Unlock()
+		return net.ErrClosed
+	}
+	c.started = true
+	c.lifetimeMu.Unlock()
+	var readDone chan struct{}
+	defer func() {
+		if startErr != nil {
+			c.Close()
+			if readDone != nil {
+				<-readDone
+			}
+			c.peerWorkers.Wait()
+			c.doneOnce.Do(func() { close(c.done) })
+		}
+	}()
 	sessionID := uuid.New().String()
 	c.mySessionID = sessionID
 	c.cfg.Logger.Debug(fmt.Sprintf("[call] my session_id=%s", sessionID))
@@ -140,7 +172,14 @@ func (c *Call) Start() error {
 	if err != nil {
 		return fmt.Errorf("DialSignaling: %w", err)
 	}
+	c.lifetimeMu.Lock()
+	if c.ctx.Err() != nil {
+		c.lifetimeMu.Unlock()
+		_ = signaling.Close()
+		return net.ErrClosed
+	}
 	c.signaling = signaling
+	c.lifetimeMu.Unlock()
 	if err := signaling.WaitConnected(15 * time.Second); err != nil {
 		return fmt.Errorf("WaitConnected: %w", err)
 	}
@@ -173,7 +212,11 @@ func (c *Call) Start() error {
 	signaling.OnGetScreenSharingFromUserResponse = c.handleGetScreenSharingFromUserResponse
 
 	readLoopDone := make(chan error, 1)
-	go func() { readLoopDone <- signaling.ReadLoop() }()
+	readDone = make(chan struct{})
+	go func() {
+		defer close(readDone)
+		readLoopDone <- signaling.ReadLoop()
+	}()
 
 	if err := signaling.Subscribe(c.cfg.Event.ID, sessionID); err != nil {
 		return fmt.Errorf("Subscribe: %w", err)
@@ -182,6 +225,8 @@ func (c *Call) Start() error {
 	var youJoined YouJoinedParams
 	select {
 	case youJoined = <-youJoinedChan:
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	case err := <-readLoopDone:
 		return fmt.Errorf("read loop ended before you_joined: %v", err)
 	case <-time.After(15 * time.Second):
@@ -201,7 +246,14 @@ func (c *Call) Start() error {
 	if err != nil {
 		return fmt.Errorf("BuildPionPeer: %w", err)
 	}
+	c.lifetimeMu.Lock()
+	if c.ctx.Err() != nil {
+		c.lifetimeMu.Unlock()
+		peer.Close()
+		return net.ErrClosed
+	}
 	c.peer = peer
+	c.lifetimeMu.Unlock()
 
 	sendMidIndex := sendVideoMidIndex
 	if c.cfg.Role == RoleCreator {
@@ -224,17 +276,17 @@ func (c *Call) Start() error {
 	if err := sender.ReplaceTrack(track); err != nil {
 		return fmt.Errorf("ReplaceTrack: %w", err)
 	}
-	go rtc.DrainSenderRTCP(sender)
+	c.runPeerWorker(func() { rtc.DrainSenderRTCP(sender) })
 	c.cfg.Logger.Debug(fmt.Sprintf("[call] role=%s attached send track to mid=%d", c.cfg.Role, sendMidIndex))
 
 	peer.PC.OnTrack(func(remoteTrack *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		c.cfg.Logger.Debug(fmt.Sprintf("[call] OnTrack id=%q kind=%s codec=%s ssrc=%d",
 			remoteTrack.ID(), remoteTrack.Kind().String(), remoteTrack.Codec().MimeType, remoteTrack.SSRC()))
 		if remoteTrack.Codec().MimeType != webrtc.MimeTypeVP8 {
-			go rtc.DrainTrack(remoteTrack)
+			c.runPeerWorker(func() { rtc.DrainTrack(remoteTrack) })
 			return
 		}
-		go c.readVP8Track(remoteTrack)
+		c.runPeerWorker(func() { c.readVP8Track(remoteTrack) })
 	})
 
 	var pendingMu sync.Mutex
@@ -320,6 +372,8 @@ func (c *Call) Start() error {
 	var answer SDPAnswerParams
 	select {
 	case answer = <-sdpAnswerChan:
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	case err := <-readLoopDone:
 		return fmt.Errorf("read loop ended before sdp_answer: %v", err)
 	case <-time.After(20 * time.Second):
@@ -341,6 +395,8 @@ func (c *Call) Start() error {
 
 	select {
 	case <-iceConnected:
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	case state := <-iceDead:
 		return fmt.Errorf("ICE died before connected: %s", state.String())
 	case err := <-readLoopDone:
@@ -354,9 +410,17 @@ func (c *Call) Start() error {
 	if c.cfg.Role == RoleCreator {
 		fps, batch = creatorVP8FPS, creatorVP8Batch
 	}
-	c.vp8tun = rtc.NewVP8DataTunnel(c.sendTrack, c.cfg.Obfuscator, c.cfg.Logger)
-	c.vp8tun.Start(fps, batch)
-	c.fireOnConnected(c.vp8tun)
+	dataTunnel := rtc.NewVP8DataTunnel(c.sendTrack, c.cfg.Obfuscator, c.cfg.Logger)
+	dataTunnel.Start(fps, batch)
+	c.lifetimeMu.Lock()
+	if c.ctx.Err() != nil {
+		c.lifetimeMu.Unlock()
+		dataTunnel.Stop()
+		return net.ErrClosed
+	}
+	c.vp8tun = dataTunnel
+	c.lifetimeMu.Unlock()
+	c.fireOnConnected(dataTunnel)
 
 	if c.cfg.Role == RoleCreator {
 		if err := signaling.SendScreenSharingSwitchOn(); err != nil {
@@ -377,17 +441,24 @@ func (c *Call) Start() error {
 		}
 	}
 
-	go c.discoverPeersAndSubscribe()
-	go c.runStatReporter()
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() { defer workers.Done(); c.discoverPeersAndSubscribe() }()
+	go func() { defer workers.Done(); c.runStatReporter() }()
 
 	go func() {
-		defer close(c.done)
+		defer c.doneOnce.Do(func() { close(c.done) })
 		select {
 		case state := <-iceDead:
 			c.cfg.Logger.Debug(fmt.Sprintf("[call] ICE went to %s", state.String()))
 		case err := <-readLoopDone:
 			c.cfg.Logger.Debug(fmt.Sprintf("[call] read loop ended: %v", common.MaskError(err)))
+		case <-c.ctx.Done():
 		}
+		c.Close()
+		<-readDone
+		workers.Wait()
+		c.peerWorkers.Wait()
 	}()
 
 	return nil
@@ -395,16 +466,41 @@ func (c *Call) Start() error {
 
 func (c *Call) Close() {
 	c.closeOnce.Do(func() {
-		if c.vp8tun != nil {
-			c.vp8tun.Stop()
+		c.cancel()
+		c.lifetimeMu.Lock()
+		dataTunnel, signaling, peer := c.vp8tun, c.signaling, c.peer
+		if !c.started {
+			c.doneOnce.Do(func() { close(c.done) })
 		}
-		if c.signaling != nil {
-			c.signaling.Close()
+		c.lifetimeMu.Unlock()
+		if dataTunnel != nil {
+			dataTunnel.Stop()
 		}
-		if c.peer != nil {
-			c.peer.Close()
+		if signaling != nil {
+			signaling.Close()
+		}
+		if peer != nil {
+			peer.Close()
 		}
 	})
+}
+
+// The outer owner calls this after its Start attempt returned. Signaling and
+// peer callbacks use Close so they never join their own worker.
+func (c *Call) closeAndWait() {
+	c.Close()
+	<-c.done
+}
+
+func (c *Call) runPeerWorker(run func()) {
+	c.lifetimeMu.Lock()
+	if c.ctx.Err() != nil {
+		c.lifetimeMu.Unlock()
+		return
+	}
+	c.peerWorkers.Add(1)
+	c.lifetimeMu.Unlock()
+	go func() { defer c.peerWorkers.Done(); run() }()
 }
 
 func (c *Call) fireOnConnected(tun tunnel.DataTunnel) {
@@ -523,7 +619,9 @@ func (c *Call) handleConfSpeakersState(response ConfSpeakersStateResponse) {
 }
 
 func (c *Call) discoverPeersAndSubscribe() {
-	time.Sleep(500 * time.Millisecond)
+	if !common.WaitContext(c.ctx, 500*time.Millisecond) {
+		return
+	}
 	if err := c.signaling.SendConfSpeakersState(DefaultConfSpeakersStateRequest()); err != nil {
 		c.cfg.Logger.Debug(fmt.Sprintf("[call] SendConfSpeakersState: %v", common.MaskError(err)))
 	}
@@ -614,7 +712,7 @@ func (c *Call) handleSubscribeResponse(rpc, sessionID, transceiverID string, err
 			c.freeMids = append(c.freeMids, mid)
 		}
 		c.peersMu.Unlock()
-		c.cfg.Logger.Debug(fmt.Sprintf("[call] %s FAILED session=%s mid=%s code=%d msg=%q", rpc, sessionID, mid, errCode, errMsg))
+		c.cfg.Logger.Debug(fmt.Sprintf("[call] %s FAILED session=%s mid=%s code=%d", rpc, sessionID, mid, errCode))
 		return
 	}
 	c.peersMu.Unlock()
@@ -665,8 +763,11 @@ func (c *Call) readVP8Track(track *webrtc.TrackRemote) {
 		if !pkt.Marker {
 			continue
 		}
-		if c.vp8tun != nil {
-			c.vp8tun.HandleFrame(frameBuf)
+		c.lifetimeMu.Lock()
+		dataTunnel := c.vp8tun
+		c.lifetimeMu.Unlock()
+		if dataTunnel != nil {
+			dataTunnel.HandleFrame(frameBuf)
 		}
 		frameBuf = frameBuf[:0]
 		frameValid = false
@@ -675,7 +776,7 @@ func (c *Call) readVP8Track(track *webrtc.TrackRemote) {
 
 func (c *Call) runStatReporter() {
 	select {
-	case <-c.done:
+	case <-c.ctx.Done():
 		return
 	case <-time.After(1500 * time.Millisecond):
 	}
@@ -689,7 +790,7 @@ func (c *Call) runStatReporter() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-c.done:
+		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
 			c.sendStatReport()

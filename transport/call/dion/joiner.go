@@ -164,7 +164,7 @@ func (j *DionJoiner) runOnce() error {
 	case <-call.Done():
 	case <-j.stopCh:
 	}
-	call.Close()
+	call.closeAndWait()
 	j.mu.Lock()
 	if j.call == call {
 		j.call = nil

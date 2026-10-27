@@ -112,7 +112,7 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 		cancel()
 		common.RetireServingTransports(dialer)
 		<-done
-		call.Close()
+		call.closeAndWait()
 		relayMu.Lock()
 		active := activeRelay
 		relayMu.Unlock()
