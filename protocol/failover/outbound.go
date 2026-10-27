@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/sagernet/sing-box/adapter"
@@ -66,6 +67,9 @@ func NewFailover(ctx context.Context, router adapter.Router, logger log.ContextL
 }
 
 func (f *Failover) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage == adapter.StartStateInitialize {
+		f.ctx = scope.Context()
+	}
 	for _, outbound := range f.outbounds {
 		lifecycle, isLifecycle := outbound.(adapter.Lifecycle)
 		if !isLifecycle {
@@ -114,41 +118,65 @@ func (f *Failover) DialContext(ctx context.Context, network string, destination 
 	if N.NetworkName(network) == N.NetworkUDP {
 		return f.uotClient.DialContext(ctx, network, destination)
 	}
-	conn, err := f.dial(ctx, network, Destination)
-	if err != nil {
-		return nil, err
-	}
 	sessionUUID, err := uuid.NewV4()
 	if err != nil {
 		return nil, err
 	}
-	err = WriteRequest(conn, &Request{Command: CommandTCP, UUID: sessionUUID, Destination: destination})
+	sessionCtx, cancel := context.WithCancel(ctx)
+	stopServing := context.AfterFunc(f.ctx, cancel)
+	conn, err := f.dialSession(sessionCtx, network, &Request{Command: CommandTCP, UUID: sessionUUID, Destination: destination})
 	if err != nil {
+		stopServing()
+		cancel()
 		return nil, err
 	}
-	return NewFailoverConn(ctx, conn, func() (net.Conn, error) {
-		ctx, cancel := context.WithTimeout(ctx, C.TCPConnectTimeout)
-		defer cancel()
-		conn, err := f.dial(ctx, network, Destination)
-		if err != nil {
-			return nil, err
+	return NewFailoverConn(sessionCtx, conn, func(ctx context.Context) (net.Conn, error) {
+		return f.dialSession(ctx, network, &Request{Command: CommandReconnect, UUID: sessionUUID, Destination: destination})
+	}, func() { stopServing(); cancel() }), nil
+}
+
+func (f *Failover) dialSession(ctx context.Context, network string, request *Request) (conn net.Conn, retErr error) {
+	ctx, cancel := context.WithTimeout(ctx, C.TCPConnectTimeout)
+	defer cancel()
+	conn, retErr = f.dial(ctx, network, Destination)
+	if retErr != nil {
+		if conn != nil {
+			_ = conn.Close()
 		}
-		err = WriteRequest(conn, &Request{Command: CommandReconnect, UUID: sessionUUID, Destination: destination})
-		if err != nil {
-			return nil, err
+		return nil, retErr
+	}
+	defer func() {
+		if retErr != nil {
+			_ = conn.Close()
 		}
+	}()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		return conn, err
+	}
+	if err := WriteRequest(conn, request); err != nil {
+		return conn, err
+	}
+	if request.Command == CommandReconnect {
 		var data [1]byte
-		_, err = io.ReadFull(conn, data[:])
+		_, err := io.ReadFull(conn, data[:])
 		if err != nil {
-			return nil, err
+			return conn, err
 		}
-		var status uint8 = data[0]
-		if status == StatusSessionNotFound {
-			conn.Close()
-			return nil, SessionNotFound
+		switch data[0] {
+		case StatusOK:
+		case StatusSessionNotFound:
+			return conn, SessionNotFound
+		default:
+			return conn, E.New("unknown failover status: ", data[0])
 		}
-		return conn, nil
-	}, nil), nil
+	}
+	if err := ctx.Err(); err != nil {
+		return conn, err
+	}
+	return conn, conn.SetDeadline(time.Time{})
 }
 
 func (f *Failover) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {

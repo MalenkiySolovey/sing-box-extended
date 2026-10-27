@@ -17,6 +17,9 @@ func cycleStrategy(outbounds []adapter.Outbound, logger logger.ContextLogger, de
 	return func(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 		for {
 			for _, outbound := range outbounds {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 				conn, err := outbound.DialContext(ctx, network, destination)
 				if err != nil {
 					logger.InfoContext(ctx, err)
@@ -29,6 +32,10 @@ func cycleStrategy(outbounds []adapter.Outbound, logger logger.ContextLogger, de
 					}
 					continue
 				}
+				if err := ctx.Err(); err != nil {
+					_ = conn.Close()
+					return nil, err
+				}
 				return conn, nil
 			}
 		}
@@ -39,6 +46,9 @@ func sequentialStrategy(outbounds []adapter.Outbound, logger logger.ContextLogge
 	return func(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 		var err error
 		for _, outbound := range outbounds {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			var conn net.Conn
 			conn, err = outbound.DialContext(ctx, network, destination)
 			if err != nil {
@@ -52,6 +62,10 @@ func sequentialStrategy(outbounds []adapter.Outbound, logger logger.ContextLogge
 				}
 				continue
 			}
+			if err := ctx.Err(); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
 			return conn, nil
 		}
 		return nil, err
@@ -59,6 +73,9 @@ func sequentialStrategy(outbounds []adapter.Outbound, logger logger.ContextLogge
 }
 
 func CreateStrategy(strategy string, outbounds []adapter.Outbound, logger logger.ContextLogger, delay time.Duration) (DialStrategy, error) {
+	if len(outbounds) == 0 {
+		return nil, E.New("missing outbounds")
+	}
 	switch strategy {
 	case "cycle":
 		return cycleStrategy(outbounds, logger, delay), nil
