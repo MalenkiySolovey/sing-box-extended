@@ -42,6 +42,7 @@ type ConnInfo struct {
 }
 
 type Bridge struct {
+	ctx          context.Context
 	mu           sync.Mutex
 	ws           *websocket.Conn
 	relay        *SFURelay
@@ -319,7 +320,7 @@ func (b *Bridge) sendStartupSlotsRamp() {
 	}
 }
 
-func (b *Bridge) handleMessage(raw []byte) {
+func (b *Bridge) handleMessage(raw []byte, poll func()) {
 	var msg map[string]any
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
@@ -432,7 +433,7 @@ func (b *Bridge) handleMessage(raw []byte) {
 				close(ch)
 			}
 			if remaining == 0 {
-				go b.pollAndAdmit()
+				poll()
 			}
 		}
 		b.ack(uid)
@@ -441,13 +442,13 @@ func (b *Bridge) handleMessage(raw []byte) {
 	if n, ok := msg["notification"]; ok {
 		b.logger.Debug(fmt.Sprintf("[tm-ws] <- notification %s", BriefJSON(n)))
 		b.ack(uid)
-		go b.pollAndAdmit()
+		poll()
 		return
 	}
 	if pc, ok := msg["participantsChanged"]; ok {
 		b.logger.Debug(fmt.Sprintf("[tm-ws] <- participantsChanged %s", BriefJSON(pc)))
 		b.ack(uid)
-		go b.pollAndAdmit()
+		poll()
 		return
 	}
 	if sc, ok := msg["slotsConfig"]; ok {
@@ -666,7 +667,7 @@ func (b *Bridge) kickPeer(peerID string) error {
 	return nil
 }
 
-func (b *Bridge) pollAndAdmit() {
+func (b *Bridge) pollAndAdmit(ctx context.Context) {
 	confURL := url.QueryEscape(b.connInfo.ConferenceURI)
 	r, status, err := tmRequest(b.dialer, "GET", "/conferences/"+confURL+"/waiting-rooms/peers", nil, b.cookieStr, b.config)
 	if err != nil || status != 200 {
@@ -708,7 +709,11 @@ func (b *Bridge) pollAndAdmit() {
 		}
 	}
 	for pid, ch := range waits {
-		<-ch
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return
+		}
 		b.logger.Debug(fmt.Sprintf("[tm-ws] kick confirmed for %s", pid))
 	}
 	p := resp.Peers[0]
@@ -736,11 +741,21 @@ func (b *Bridge) initRelay() {
 		b.logger.Debug("[relay] pub PC connected")
 	}
 	relay.OnConnected = func(tun tunnel.DataTunnel) {
-		if b.activeBridge != nil {
-			b.activeBridge.Reset()
+		b.mu.Lock()
+		if b.ctx.Err() != nil {
+			b.mu.Unlock()
+			return
 		}
-		b.activeBridge = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, b.dialer, b.logger)
-		b.activeBridge.SetOnPeerConfig(func(fps, batch, trackCount int) {
+		active := b.activeBridge
+		if active == nil {
+			active = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, b.dialer, b.logger)
+			b.activeBridge = active
+			b.mu.Unlock()
+		} else {
+			b.mu.Unlock()
+			active.SwapTunnel(tun)
+		}
+		active.SetOnPeerConfig(func(fps, batch, trackCount int) {
 			if trackCount >= 2 {
 				b.enableScreenshare()
 			} else {
@@ -750,9 +765,12 @@ func (b *Bridge) initRelay() {
 		b.logger.Debug("[relay] tunnel connected")
 	}
 	relay.OnPeerRestart = func() {
-		if b.activeBridge != nil {
+		b.mu.Lock()
+		active := b.activeBridge
+		b.mu.Unlock()
+		if active != nil && b.ctx.Err() == nil {
 			b.logger.Info("[relay] new peer detected, resetting relay bridge")
-			b.activeBridge.Reset()
+			active.Reset()
 		}
 	}
 	relay.OnPubICE = func(cand *webrtc.ICECandidate) {
@@ -773,7 +791,7 @@ func (b *Bridge) initRelay() {
 	b.relay = relay
 }
 
-func (b *Bridge) Run() {
+func (b *Bridge) Run(ctx context.Context) {
 	wsHeader := headless.ChromeWindows.Headers(headless.DestWebSocket)
 	wsHeader.Set("Origin", tmOrigin)
 	wsDialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{
@@ -781,48 +799,64 @@ func (b *Bridge) Run() {
 			return b.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
 	})
-	for {
+	for ctx.Err() == nil {
 		b.logger.Debug("[tm-ws] Connecting...")
 		ws, _, err := wsDialer.Dial(b.connInfo.MediaServerURL, wsHeader)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			b.logger.Warn(fmt.Sprintf("[tm-ws] Connect failed: %s, retrying in 5s...", common.MaskError(err)))
-			time.Sleep(5 * time.Second)
+			if !common.WaitContext(ctx, 5*time.Second) {
+				return
+			}
 			continue
 		}
 		b.mu.Lock()
+		if ctx.Err() != nil {
+			b.mu.Unlock()
+			common.CloseWS(ws)
+			return
+		}
 		b.ws = ws
 		b.mu.Unlock()
 		b.logger.Debug("[tm-ws] Connected")
 		b.sendHello()
-		go b.pollAndAdmit()
+		workerCtx, stopWorkers := context.WithCancel(ctx)
+		var workers sync.WaitGroup
+		workers.Go(func() { b.pollAndAdmit(workerCtx) })
 		stopWaitingRoomPoll := make(chan struct{})
-		go func() {
+		workers.Go(func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			for {
 				select {
 				case <-stopWaitingRoomPoll:
 					return
+				case <-ctx.Done():
+					return
 				case <-ticker.C:
-					b.pollAndAdmit()
+					b.pollAndAdmit(workerCtx)
 				}
 			}
-		}()
+		})
 		stopPing := make(chan struct{})
-		go func() {
+		workers.Go(func() {
 			ticker := time.NewTicker(tmPingPeriod)
 			defer ticker.Stop()
 			for {
 				select {
 				case <-stopPing:
 					return
+				case <-ctx.Done():
+					return
 				case <-ticker.C:
 					b.wsSend(map[string]any{"uid": uuid.New().String(), "ping": map[string]any{}})
 				}
 			}
-		}()
+		})
 		stopStateKeepalive := make(chan struct{})
-		go func() {
+		workers.Go(func() {
 			interval := b.connInfo.StateCheckIntervalS
 			if interval <= 0 {
 				interval = 30
@@ -836,33 +870,42 @@ func (b *Bridge) Run() {
 				select {
 				case <-stopStateKeepalive:
 					return
+				case <-ctx.Done():
+					return
 				case <-ticker.C:
 					if err := b.requestStates(); err != nil {
 						b.logger.Debug(fmt.Sprintf("[tm-state] request-states: %v", err))
 					}
 				}
 			}
-		}()
+		})
 		for {
 			_, raw, err := ws.ReadMessage()
 			if err != nil {
 				b.logger.Debug(fmt.Sprintf("[tm-ws] Closed: %s", common.MaskError(err)))
 				break
 			}
-			b.handleMessage(raw)
+			b.handleMessage(raw, func() { workers.Go(func() { b.pollAndAdmit(workerCtx) }) })
 		}
 		close(stopPing)
 		close(stopStateKeepalive)
 		close(stopWaitingRoomPoll)
+		stopWorkers()
+		common.CloseWS(ws)
+		workers.Wait()
 		b.mu.Lock()
 		b.ws = nil
 		b.mu.Unlock()
 		b.logger.Debug("[tm-ws] Rejoining in 3s...")
-		time.Sleep(3 * time.Second)
+		if !common.WaitContext(ctx, 3*time.Second) {
+			return
+		}
 		newConn, err := getConnection(b.dialer, b.cookieStr, url.QueryEscape(b.connInfo.ConferenceURI), b.config)
 		if err != nil {
 			b.logger.Warn(fmt.Sprintf("[rejoin] Failed: %v, retrying in 5s...", err))
-			time.Sleep(5 * time.Second)
+			if !common.WaitContext(ctx, 5*time.Second) {
+				return
+			}
 			continue
 		}
 		if oldPid := b.connInfo.PeerID; oldPid != "" && oldPid != newConn.PeerID {

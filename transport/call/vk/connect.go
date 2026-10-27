@@ -15,6 +15,13 @@ import (
 )
 
 func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	retained := false
+	defer func() {
+		if !retained {
+			cancel()
+		}
+	}()
 	cfg, err := FetchConfig(logger)
 	if err != nil {
 		return nil, "", err
@@ -36,6 +43,7 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		return nil, "", fmt.Errorf("vk: obfuscator init: %w", err)
 	}
 	bridge := &Bridge{
+		ctx:       ctx,
 		dialer:    dialer,
 		dnsRouter: dnsRouter,
 		readBuf:   readBuf,
@@ -46,11 +54,27 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		ur.readBufSize = readBuf
 		ur.SetObfuscator(obf)
 		ur.OnConnected = func(tun tunnel.DataTunnel) {
+			if ctx.Err() != nil {
+				return
+			}
 			bridgeReadBuf := common.VP8BufSize
 			if _, ok := tun.(*rtc.DCTunnel); ok {
 				bridgeReadBuf = readBuf
 			}
-			rb := tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
+			bridge.mu.Lock()
+			if ctx.Err() != nil {
+				bridge.mu.Unlock()
+				return
+			}
+			rb := bridge.activeBridge
+			if rb == nil {
+				rb = tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
+				bridge.activeBridge = rb
+				bridge.mu.Unlock()
+			} else {
+				bridge.mu.Unlock()
+				rb.SwapTunnel(tun)
+			}
 			rb.MarkReady()
 			if st, ok := tun.(*rtc.SymmetricScreenTunnel); ok {
 				rb.SetOnPeerConfig(func(fps, batch, trackCount int) {
@@ -58,26 +82,48 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 					bridge.setScreenSharing(trackCount > 1)
 				})
 			}
-			bridge.mu.Lock()
-			bridge.activeBridge = rb
-			bridge.mu.Unlock()
 		}
 		return ur
 	}
-	go bridge.Run(callInfo, cookieStr, cfg)
+	done := make(chan struct{})
+	go func() { defer close(done); bridge.Run(ctx, callInfo, cookieStr, cfg) }()
+	stop := func() {
+		cancel()
+		common.RetireServingTransports(dialer)
+		bridge.mu.Lock()
+		sfu := bridge.sfu
+		bridge.mu.Unlock()
+		if sfu != nil {
+			_ = sfu.Close()
+		}
+		<-done
+		if bridge.relay != nil {
+			bridge.relay.Close()
+		}
+		bridge.mu.Lock()
+		active := bridge.activeBridge
+		bridge.mu.Unlock()
+		if active != nil {
+			active.Close()
+		}
+	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		bridge.mu.Lock()
 		rb := bridge.activeBridge
 		bridge.mu.Unlock()
 		if rb != nil {
+			rb.SetOwnerCleanup(stop)
+			retained = true
 			return rb, callInfo.JoinLink, nil
 		}
 		if time.Now().After(deadline) {
+			stop()
 			return nil, "", fmt.Errorf("vk: creator tunnel timed out")
 		}
 		select {
 		case <-ctx.Done():
+			stop()
 			return nil, "", ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}

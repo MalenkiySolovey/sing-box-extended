@@ -13,6 +13,13 @@ import (
 )
 
 func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	retained := false
+	defer func() {
+		if !retained {
+			cancel()
+		}
+	}()
 	cfg, err := FetchConfig(dialer, logger)
 	if err != nil {
 		return nil, "", err
@@ -30,6 +37,7 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		readBuf = 32768
 	}
 	bridge := &Bridge{
+		ctx:       ctx,
 		connInfo:  connInfo,
 		config:    cfg,
 		cookieStr: cookieStr,
@@ -39,19 +47,47 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		dialer:    dialer,
 		logger:    logger,
 	}
-	go bridge.Run()
+	done := make(chan struct{})
+	go func() { defer close(done); bridge.Run(ctx) }()
+	stop := func() {
+		cancel()
+		common.RetireServingTransports(dialer)
+		bridge.mu.Lock()
+		ws := bridge.ws
+		bridge.mu.Unlock()
+		common.CloseWS(ws)
+		<-done
+		if bridge.relay != nil {
+			bridge.relay.Close()
+		}
+		bridge.mu.Lock()
+		active := bridge.activeBridge
+		bridge.mu.Unlock()
+		if active != nil {
+			active.Close()
+		}
+	}
 	deadline := time.Now().Add(60 * time.Second)
-	for bridge.activeBridge == nil {
+	for {
+		bridge.mu.Lock()
+		active := bridge.activeBridge
+		bridge.mu.Unlock()
+		if active != nil {
+			active.SetOwnerCleanup(stop)
+			retained = true
+			return active, connInfo.ConferenceURI, nil
+		}
 		if time.Now().After(deadline) {
+			stop()
 			return nil, "", fmt.Errorf("telemost: creator tunnel timed out")
 		}
 		select {
 		case <-ctx.Done():
+			stop()
 			return nil, "", ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return bridge.activeBridge, connInfo.ConferenceURI, nil
 }
 
 func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
