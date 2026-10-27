@@ -40,4 +40,7 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0029 | Preserve selected ResolveDialer query options through Call serving network ownership without inventing resolver support | ./protocol/call -run TestCall |
 
+| EXTENDED-0030 | Own Call relay admission, pending streams and packet cleanup; preserve UDP datagram boundaries | ./transport/call/tunnel -run TestCall |
+| EXTENDED-0031 | Retire native creator reconnect/signaling workers and use the selected dialer for VK WebTransport QUIC | ./protocol/call; ./transport/call/wtsignal -run TestCall |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
