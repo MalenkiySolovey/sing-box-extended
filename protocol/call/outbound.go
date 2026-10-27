@@ -36,11 +36,11 @@ type Outbound struct {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallOutboundOptions) (adapter.Outbound, error) {
-	if options.JoinLink == "" {
-		return nil, E.New("missing join_link")
+	if err := validateCommonOptions(options.CallCommonOptions, false); err != nil {
+		return nil, err
 	}
-	if options.Platform == "" {
-		return nil, E.New("missing platform")
+	if err := validateCredentials(options.Cookies, options.JoinLink, false); err != nil {
+		return nil, err
 	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, true)
 	if err != nil {

@@ -42,8 +42,11 @@ type Inbound struct {
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallInboundOptions) (adapter.Inbound, error) {
-	if options.Platform == "" {
-		return nil, E.New("missing platform")
+	if err := validateCommonOptions(options.CallCommonOptions, true); err != nil {
+		return nil, err
+	}
+	if err := validateCredentials(options.Cookies, options.JoinLink, true); err != nil {
+		return nil, err
 	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, true)
 	if err != nil {

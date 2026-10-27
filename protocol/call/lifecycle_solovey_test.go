@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,23 @@ import (
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	M "github.com/sagernet/sing/common/metadata"
 )
+
+func TestCallConstructionRejectsBeforeDialerAndKeepsCredentialsPrivate(t *testing.T) {
+	for _, options := range []option.CallInboundOptions{
+		{CallCommonOptions: option.CallCommonOptions{Platform: "bitrix"}},
+		{CallCommonOptions: option.CallCommonOptions{Platform: "unknown"}},
+		{CallCommonOptions: option.CallCommonOptions{Platform: "wbstream", Mode: "typo"}},
+		{CallCommonOptions: option.CallCommonOptions{Platform: "telemost", MemoryLimit: 1}},
+		{CallCommonOptions: option.CallCommonOptions{Platform: "telemost"}, Cookies: option.CallCookieList{{Name: "session", Value: "private-cookie\nvalue"}}},
+	} {
+		// A nil construction context deliberately cannot supply a native dialer.
+		// Invalid candidates must fail first and must not echo credential values.
+		inbound, err := NewInbound(nil, nil, nil, "invalid", options)
+		if err == nil || inbound != nil || strings.Contains(err.Error(), "private-cookie") {
+			t.Fatal("invalid candidate acquired a dialer or exposed credentials")
+		}
+	}
+}
 
 type lifecycleResolveDialer struct{ *silentCallDialer }
 
