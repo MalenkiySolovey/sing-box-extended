@@ -12,13 +12,17 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/kmutex"
+	"github.com/sagernet/sing-box/log"
+	N "github.com/sagernet/sing/common/network"
 )
 
 type observedFailoverConn struct {
 	net.Conn
 	read, write         chan struct{}
 	readOnce, writeOnce sync.Once
+	onClose             func()
 }
 
 func (c *observedFailoverConn) Read(b []byte) (int, error) {
@@ -32,6 +36,14 @@ func (c *observedFailoverConn) Write(b []byte) (int, error) {
 		c.writeOnce.Do(func() { close(c.write) })
 	}
 	return c.Conn.Write(b)
+}
+
+func (c *observedFailoverConn) Close() error {
+	err := c.Conn.Close()
+	if c.onClose != nil {
+		c.onClose()
+	}
+	return err
 }
 
 func failoverMustFinish(t *testing.T, done <-chan struct{}) {
@@ -52,6 +64,9 @@ func TestFailoverCloseInterruptsIOAndReentrantOwner(t *testing.T) {
 			var callbacks atomic.Int32
 			var conn *failoverConn
 			conn = NewFailoverConn(context.Background(), observed, nil, func() { callbacks.Add(1); _ = conn.Close() })
+			if !restoring {
+				observed.onClose = func() { _ = conn.Close() }
+			}
 			readDone := make(chan struct{})
 			go func() { _, _ = conn.Read(make([]byte, 1)); close(readDone) }()
 			failoverMustFinish(t, observed.read)
@@ -59,7 +74,7 @@ func TestFailoverCloseInterruptsIOAndReentrantOwner(t *testing.T) {
 			if restoring {
 				replacement, replacementPeer := net.Pipe()
 				defer replacementPeer.Close()
-				observed := &observedFailoverConn{Conn: replacement, write: make(chan struct{})}
+				observed := &observedFailoverConn{Conn: replacement, write: make(chan struct{}), onClose: func() { _ = conn.Close() }}
 				restoreDone = make(chan struct{})
 				go func() { _ = conn.RestoreConn(observed); close(restoreDone) }()
 				failoverMustFinish(t, observed.write)
@@ -95,7 +110,7 @@ func TestFailoverRejectedLegReleasesSessionAdmission(t *testing.T) {
 	for _, command := range []byte{255, CommandReconnect} {
 		t.Run(map[byte]string{255: "unknown-command", CommandReconnect: "failed-status-write"}[command], func(t *testing.T) {
 			id := uuid.Must(uuid.NewV4())
-			h := &Inbound{sessionMtx: kmutex.New[uuid.UUID](), conns: map[uuid.UUID]*failoverConn{id: {}}}
+			h := &Inbound{sessionMtx: kmutex.New[uuid.UUID](), conns: map[uuid.UUID]*inboundSession{id: {destination: Destination}}, connections: make(map[*inboundLeg]struct{}), serving: context.Background()}
 			var request bytes.Buffer
 			if err := WriteRequest(&request, &Request{UUID: id, Command: command, Destination: Destination}); err != nil {
 				t.Fatal(err)
@@ -108,6 +123,59 @@ func TestFailoverRejectedLegReleasesSessionAdmission(t *testing.T) {
 					close(done)
 				}()
 				failoverMustFinish(t, done)
+			}
+		})
+	}
+}
+
+type scopeFailoverRouter struct {
+	adapter.Router
+	scope *adapter.Scope
+}
+
+func (r *scopeFailoverRouter) RouteConnectionEx(context.Context, net.Conn, adapter.InboundContext, N.CloseHandlerFunc) {
+	_ = r.scope.Close()
+}
+
+func TestFailoverScopeOwnsPendingAndRoutedLegs(t *testing.T) {
+	for _, routed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "routed-reentrant"}[routed], func(t *testing.T) {
+			scope := adapter.NewScope(t.Context(), log.NewNOPFactory().Logger())
+			h := &Inbound{Adapter: inbound.NewAdapter("failover", "group"), router: &scopeFailoverRouter{scope: scope}, sessionMtx: kmutex.New[uuid.UUID](), conns: make(map[uuid.UUID]*inboundSession), connections: make(map[*inboundLeg]struct{})}
+			if err := h.Start(adapter.StartStateInitialize, scope); err != nil {
+				t.Fatal(err)
+			}
+			raw, peer := net.Pipe()
+			defer peer.Close()
+			observed := &observedFailoverConn{Conn: raw, read: make(chan struct{})}
+			var callbacks atomic.Int32
+			done := make(chan struct{})
+			go func() {
+				_ = h.connHandler(t.Context(), observed, adapter.InboundContext{Destination: Destination}, func(error) { callbacks.Add(1); _ = scope.Close() })
+				close(done)
+			}()
+			failoverMustFinish(t, observed.read)
+			if routed {
+				if err := WriteRequest(peer, &Request{UUID: uuid.Must(uuid.NewV4()), Command: CommandTCP, Destination: Destination}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				closed := make(chan struct{})
+				go func() { _ = scope.Close(); close(closed) }()
+				failoverMustFinish(t, closed)
+			}
+			failoverMustFinish(t, done)
+			if callbacks.Load() != 1 {
+				t.Fatal("Scope lost or repeated an accepted-leg callback")
+			}
+			h.connAccess.Lock()
+			remaining := len(h.connections)
+			h.connAccess.Unlock()
+			h.mtx.RLock()
+			sessions := len(h.conns)
+			h.mtx.RUnlock()
+			if remaining != 0 || sessions != 0 {
+				t.Fatal("retired Scope retained native session ownership")
 			}
 		})
 	}

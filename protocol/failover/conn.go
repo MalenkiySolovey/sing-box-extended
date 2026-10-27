@@ -18,6 +18,7 @@ type failoverConn struct {
 	net.Conn
 	ctx     context.Context
 	cancel  context.CancelFunc
+	stop    func() bool
 	dial    dial
 	onClose func()
 
@@ -53,7 +54,14 @@ func NewFailoverConn(ctx context.Context, conn net.Conn, dial dial, onClose func
 		writeBuffers: writeBuffers,
 		onClose:      onClose,
 	}
-	context.AfterFunc(lifetime, func() { _ = c.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	c.mtx.Lock()
+	if c.err == nil {
+		c.stop = stop
+	} else {
+		stop()
+	}
+	c.mtx.Unlock()
 	return c
 }
 
@@ -183,21 +191,28 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 
 func (c *failoverConn) Close() error {
 	c.cancel()
+	var conn net.Conn
 	var notify func()
+	var stop func() bool
 	c.once.Do(func() {
 		c.mtx.RLock()
-		conn := c.Conn
+		conn, notify, stop = c.Conn, c.onClose, c.stop
 		c.mtx.RUnlock()
-		// Interrupt blocked transport I/O before waiting for exclusive state.
-		_ = conn.Close()
-		c.mtx.Lock()
-		if c.err == nil {
-			c.err = io.EOF
-		}
-		notify = c.onClose
-		c.mtx.Unlock()
 	})
-	// A Scope/owner callback may re-enter Close; it runs outside Once and locks.
+	if conn == nil {
+		return nil
+	}
+	if stop != nil {
+		stop()
+	}
+	// Transport close itself may invoke an owner callback. Retire outside Once
+	// as well as locks, and interrupt I/O before waiting for exclusive state.
+	_ = conn.Close()
+	c.mtx.Lock()
+	if c.err == nil {
+		c.err = io.EOF
+	}
+	c.mtx.Unlock()
 	if notify != nil {
 		notify()
 	}
