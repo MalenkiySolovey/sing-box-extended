@@ -36,6 +36,7 @@ type failoverConn struct {
 	mtx        sync.RWMutex
 	readMtx    sync.Mutex
 	writeMtx   sync.Mutex
+	writeCall  sync.Mutex
 	restoreMtx sync.Mutex
 }
 
@@ -66,6 +67,9 @@ func NewFailoverConn(ctx context.Context, conn net.Conn, dial dial, onClose func
 }
 
 func (c *failoverConn) Read(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
 	for {
 		c.readMtx.Lock()
 		c.mtx.RLock()
@@ -86,7 +90,6 @@ func (c *failoverConn) Read(b []byte) (int, error) {
 			}
 			continue
 		}
-		c.readIndex++
 		c.mtx.RUnlock()
 		c.readMtx.Unlock()
 		return n, err
@@ -94,27 +97,41 @@ func (c *failoverConn) Read(b []byte) (int, error) {
 }
 
 func (c *failoverConn) Write(b []byte) (int, error) {
-	for {
+	c.writeCall.Lock()
+	defer c.writeCall.Unlock()
+	total := 0
+	for len(b) != 0 {
+		frame := b[:min(len(b), 65535)]
 		c.writeMtx.Lock()
 		c.mtx.RLock()
-		conn := c.Conn
-		n, err := c.write(conn, b)
-		if err != nil {
+		if c.err != nil || c.ctx.Err() != nil {
+			err := c.err
+			if err == nil {
+				err = c.ctx.Err()
+			}
 			c.mtx.RUnlock()
 			c.writeMtx.Unlock()
-			err = c.awaitConn(conn)
-			if err != nil {
-				return 0, err
-			}
-			continue
+			return total, err
 		}
-		writeIndex := c.writeIndex % BufferSize
-		c.writeBuffers[writeIndex] = append(c.writeBuffers[writeIndex][:0], b...)
+		conn := c.Conn
+		// Retain before writing: an errored write may already have reached the
+		// peer. Its next frame acknowledgment decides whether to replay it.
+		index := c.writeIndex % BufferSize
+		c.writeBuffers[index] = append(c.writeBuffers[index][:0], frame...)
 		c.writeIndex++
+		_, err := c.write(conn, frame)
 		c.mtx.RUnlock()
 		c.writeMtx.Unlock()
-		return n, err
+		if err != nil {
+			err = c.awaitConn(conn)
+			if err != nil {
+				return total, err
+			}
+		}
+		total += len(frame)
+		b = b[len(frame):]
 	}
+	return total, nil
 }
 
 func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
@@ -140,28 +157,42 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 	c.readMtx.Lock()
 	defer c.readMtx.Unlock()
 	c.writeMtx.Lock()
-	defer c.writeMtx.Unlock()
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-	if c.err != nil || c.ctx.Err() != nil {
-		if c.err != nil {
-			return c.err
+	replaying := false
+	defer func() {
+		if !replaying {
+			c.writeMtx.Unlock()
+		}
+	}()
+	c.mtx.RLock()
+	err := c.err
+	c.mtx.RUnlock()
+	if err != nil || c.ctx.Err() != nil {
+		if err != nil {
+			return err
 		}
 		return c.ctx.Err()
 	}
-	_, err := conn.Write([]byte{
+	ack := []byte{
 		byte(c.readIndex >> 24),
 		byte(c.readIndex >> 16),
 		byte(c.readIndex >> 8),
 		byte(c.readIndex),
-	})
-	if err != nil {
-		return err
 	}
+	// Both peers exchange an acknowledgment before replay. Read and write
+	// concurrently so even an unbuffered transport can make progress.
+	written := make(chan error, 1)
+	go func() { _, err := writeFull(conn, ack); written <- err }()
 	var data [4]byte
 	_, err = io.ReadFull(conn, data[:])
 	if err != nil {
+		_ = conn.Close()
+	}
+	writeErr := <-written
+	if err != nil {
 		return err
+	}
+	if writeErr != nil {
+		return writeErr
 	}
 	writeIndex := binary.BigEndian.Uint32(data[:])
 	buffers := make([][]byte, 0, BufferSize)
@@ -172,19 +203,39 @@ func (c *failoverConn) RestoreConn(conn net.Conn) (retErr error) {
 		buffers = append(buffers, c.writeBuffers[writeIndex%BufferSize])
 		writeIndex++
 	}
-	for _, buffer := range buffers {
-		_, err = c.write(conn, buffer)
-		if err != nil {
-			return err
-		}
-	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	if c.err != nil {
+		return c.err
+	}
+	if err := c.ctx.Err(); err != nil {
 		return err
 	}
 	c.Conn = conn
 	if c.await != nil {
 		close(c.await)
 		c.await = nil
+	}
+	if len(buffers) != 0 {
+		// Let ordinary Read drain the peer's replay while our replay holds
+		// the write side. Synchronous two-way replay can deadlock under
+		// backpressure. Scope/Close still owns and interrupts this transport.
+		replaying = true
+		go func() {
+			var err error
+			for _, buffer := range buffers {
+				if _, err = c.write(conn, buffer); err != nil {
+					break
+				}
+			}
+			c.writeMtx.Unlock()
+			if err != nil {
+				_ = conn.Close()
+			}
+		}()
 	}
 	return nil
 }
@@ -242,8 +293,10 @@ func (c *failoverConn) read(conn net.Conn, b []byte) (int, error) {
 		}
 		_, err = io.CopyN(c.readBuffer, conn, int64(n))
 		if err != nil {
+			c.readBuffer.Reset()
 			return 0, err
 		}
+		c.readIndex++
 	}
 	return c.readBuffer.Read(b)
 }
@@ -252,8 +305,27 @@ func (c *failoverConn) write(conn net.Conn, b []byte) (int, error) {
 	buffer := make([]byte, 2+len(b))
 	binary.BigEndian.PutUint16(buffer, uint16(len(b)))
 	copy(buffer[2:], b)
-	n, err := conn.Write(buffer)
-	return n - 2, err
+	n, err := writeFull(conn, buffer)
+	return max(0, n-2), err
+}
+
+func writeFull(writer io.Writer, b []byte) (int, error) {
+	total := 0
+	for len(b) != 0 {
+		n, err := writer.Write(b)
+		if n < 0 || n > len(b) {
+			return total, io.ErrShortWrite
+		}
+		total += n
+		b = b[n:]
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, nil
 }
 
 func (c *failoverConn) awaitConn(oldConn net.Conn) error {

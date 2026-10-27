@@ -93,5 +93,6 @@ func WriteRequest(writer io.Writer, request *Request) error {
 	if err != nil {
 		return err
 	}
-	return common.Error(writer.Write(buffer.Bytes()))
+	_, err = writeFull(writer, buffer.Bytes())
+	return err
 }

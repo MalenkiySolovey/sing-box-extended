@@ -186,7 +186,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		h.mtx.RUnlock()
 		if !ok {
 			unlockSession()
-			_, err := conn.Write([]byte{StatusSessionNotFound})
+			_, err := writeFull(conn, []byte{StatusSessionNotFound})
 			if err != nil {
 				return err
 			}
@@ -195,7 +195,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		if session.destination != request.Destination || session.user != metadata.User {
 			return E.New("conflicting failover session")
 		}
-		_, err = conn.Write([]byte{StatusOK})
+		_, err = writeFull(conn, []byte{StatusOK})
 		if err != nil {
 			return err
 		}
