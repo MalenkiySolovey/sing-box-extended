@@ -4,18 +4,38 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	transport "github.com/sagernet/sing-box/transport/call"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	M "github.com/sagernet/sing/common/metadata"
 )
+
+type lifecycleResolveDialer struct{ *silentCallDialer }
+
+func (*lifecycleResolveDialer) QueryOptions() adapter.DNSQueryOptions {
+	return adapter.DNSQueryOptions{ClientSubnet: netip.MustParsePrefix("192.0.2.0/24")}
+}
+
+func TestCallServingDialerPreservesSelectedResolver(t *testing.T) {
+	upstream := &lifecycleResolveDialer{&silentCallDialer{}}
+	owned := newServingDialer(t.Context(), upstream)
+	resolved, ok := owned.transportDialer().(dialer.ResolveDialer)
+	if !ok || resolved.QueryOptions().ClientSubnet != upstream.QueryOptions().ClientSubnet {
+		t.Fatal("serving transport lost the selected resolver contract")
+	}
+	if _, ok := newServingDialer(t.Context(), upstream.silentCallDialer).transportDialer().(dialer.ResolveDialer); ok {
+		t.Fatal("serving transport invented a resolver contract")
+	}
+}
 
 type lifecycleTunnel struct{}
 

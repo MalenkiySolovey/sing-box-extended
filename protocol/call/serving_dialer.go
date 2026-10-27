@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 
+	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/dialer"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -22,6 +24,24 @@ type servingDialer struct {
 
 func newServingDialer(ctx context.Context, upstream N.Dialer) *servingDialer {
 	return &servingDialer{Dialer: upstream, ctx: ctx, connections: make(map[io.Closer]struct{})}
+}
+
+// ICE and platform DNS paths inspect ResolveDialer. Preserve that contract only
+// when the selected upstream actually implements it; keep network I/O owned.
+func (d *servingDialer) transportDialer() N.Dialer {
+	if resolver, ok := d.Dialer.(dialer.ResolveDialer); ok {
+		return &servingResolveDialer{servingDialer: d, resolver: resolver}
+	}
+	return d
+}
+
+type servingResolveDialer struct {
+	*servingDialer
+	resolver dialer.ResolveDialer
+}
+
+func (d *servingResolveDialer) QueryOptions() adapter.DNSQueryOptions {
+	return d.resolver.QueryOptions()
 }
 
 func (d *servingDialer) dialContext(ctx context.Context) (context.Context, func()) {
