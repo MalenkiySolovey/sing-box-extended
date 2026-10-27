@@ -50,4 +50,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0035 | Bind MTProxy background network callbacks to the serving context and drain/reject router admission at retirement without losing authenticated stream identity | ./protocol/mtproxy -run TestMTProxy |
 
+| EXTENDED-0036 | Join native platform joiner workers at retirement, own selected signaling/pull/keepalive transports and swap replacement tunnels into the current relay | ./protocol/call ./transport/call/tunnel -run TestCallJoiner |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
