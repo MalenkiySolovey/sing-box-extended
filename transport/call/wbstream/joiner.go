@@ -120,15 +120,21 @@ func (j *WBStreamJoiner) MarkConfigAcked() {
 }
 
 func (j *WBStreamJoiner) Close() {
-	j.stopOnce.Do(func() { close(j.stopCh) })
+	j.stop()
 	j.mu.Lock()
-	j.closed = true
 	sess := j.session
 	j.session = nil
 	j.mu.Unlock()
 	if sess != nil {
 		sess.Close()
 	}
+}
+
+func (j *WBStreamJoiner) stop() {
+	j.mu.Lock()
+	j.closed = true
+	j.mu.Unlock()
+	j.stopOnce.Do(func() { close(j.stopCh) })
 }
 
 func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, tunnelMode string, obf *tunnel.TunnelObfuscator, configureSettingEngine func(*webrtc.SettingEngine), vp8FPS, vp8Batch int, dualTrack, reliable bool, attempt *atomic.Int32) error {
@@ -153,6 +159,7 @@ func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, t
 		IsJoiner:               true,
 		Reliable:               reliable,
 	})
+	defer sess.Close()
 	sess.OnConnected = func(tun tunnel.DataTunnel) {
 		attempt.Store(0)
 		j.logger.Info("wbstream-joiner: === TUNNEL CONNECTED ===")
@@ -172,7 +179,10 @@ func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, t
 		j.clearSession(sess)
 		return fmt.Errorf("session: %w", err)
 	}
-	<-sess.Done()
+	select {
+	case <-sess.Done():
+	case <-j.stopCh:
+	}
 	sess.Close()
 	j.clearSession(sess)
 	return nil

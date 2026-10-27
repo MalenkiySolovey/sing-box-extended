@@ -36,24 +36,12 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName, mode string, read
 		return nil, fmt.Errorf("bitrix: encode params: %w", err)
 	}
 	joiner := NewBitrixJoiner(logger, nil, dialer)
-	tunCh := make(chan tunnel.DataTunnel, 1)
-	joiner.OnConnected = func(tun tunnel.DataTunnel) {
-		select {
-		case tunCh <- tun:
-		default:
-		}
-	}
-	go joiner.RunWithParams(string(paramsJSON))
-	select {
-	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", bridgeReadBufFor(tun, readBuf), dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
-	case <-ctx.Done():
-		joiner.Close()
-		return nil, ctx.Err()
-	}
+	owner := tunnel.NewJoinerBridge(ctx, dialer, logger, func(tun tunnel.DataTunnel) int { return bridgeReadBufFor(tun, readBuf) }, joiner.MarkConfigAcked)
+	joiner.OnConnected = owner.OnConnected
+	return owner.Run(func() {
+		defer joiner.Close()
+		joiner.RunWithParams(string(paramsJSON))
+	}, joiner.stop)
 }
 
 func bridgeReadBufFor(tun tunnel.DataTunnel, readBuf int) int {

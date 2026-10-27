@@ -228,3 +228,41 @@ func TestCallInboundScopeInterruptsActualPlatformHTTP(t *testing.T) {
 		t.Fatal("platform authentication transport survived Scope")
 	}
 }
+
+func TestCallJoinerScopeInterruptsActualPlatformSetup(t *testing.T) {
+	for _, target := range []struct{ platform, room string }{
+		{"telemost", "https://telemost.yandex.ru/j/fixture"},
+		{"dion", "dion://fixture"},
+		{"vk", "https://vk.com/call/join/fixture"},
+		{"wbstream", "fixture"},
+		{"bitrix", "https://fixture.invalid/video/fixture"},
+	} {
+		t.Run(target.platform, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer server.Close()
+			logger := log.NewNOPFactory().Logger()
+			scope := adapter.NewScope(t.Context(), logger)
+			defer scope.Close()
+			dialer := &silentCallDialer{conn: client, started: make(chan struct{})}
+			outbound := &Outbound{ctx: t.Context(), logger: logger, dialer: dialer, connect: transport.Connect,
+				options: option.CallOutboundOptions{CallCommonOptions: option.CallCommonOptions{Platform: target.platform}, JoinLink: target.room}}
+			for _, stage := range []adapter.StartStage{adapter.StartStateInitialize, adapter.StartStatePostStart} {
+				if err := outbound.Start(stage, scope); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-dialer.started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("native joiner setup did not use its selected dialer")
+			}
+			stopped := make(chan struct{})
+			go func() { _ = scope.Close(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(2 * time.Second):
+				t.Fatal("native joiner setup retained a worker after serving retirement")
+			}
+		})
+	}
+}

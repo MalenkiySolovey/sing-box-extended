@@ -180,6 +180,16 @@ func (h *VKJoiner) RunWithParams(jsonParams string) {
 }
 
 func (h *VKJoiner) Close() {
+	h.stop()
+	if h.vp8tunnel != nil {
+		h.vp8tunnel.Stop()
+	}
+	if h.pc != nil {
+		h.pc.Close()
+	}
+}
+
+func (h *VKJoiner) stop() {
 	h.stopOnce.Do(func() { close(h.stopCh) })
 	StopCaptchaProxy()
 	h.vkMu.Lock()
@@ -188,12 +198,6 @@ func (h *VKJoiner) Close() {
 	h.vkMu.Unlock()
 	if sfu != nil {
 		sfu.Close()
-	}
-	if h.vp8tunnel != nil {
-		h.vp8tunnel.Stop()
-	}
-	if h.pc != nil {
-		h.pc.Close()
 	}
 }
 
@@ -383,6 +387,11 @@ func (h *VKJoiner) connectSFU() {
 		return
 	}
 	h.vkMu.Lock()
+	if h.isClosed() {
+		h.vkMu.Unlock()
+		sfu.Close()
+		return
+	}
 	h.sfu = sfu
 	h.vkSeq = 0
 	h.vkMu.Unlock()
