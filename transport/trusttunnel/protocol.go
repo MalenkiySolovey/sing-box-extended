@@ -120,6 +120,14 @@ func (h *httpConn) Close() error {
 	if h.closeFn != nil {
 		h.closeFn()
 	}
+	// ResponseWriter is owned by ServeHTTP until done closes. Interrupt a
+	// blocked server write, then join the admitted write/Flush before allowing
+	// the handler to return and the HTTP implementation to retire its writer.
+	if response, ok := h.writer.(http.ResponseWriter); ok {
+		_ = http.NewResponseController(response).SetWriteDeadline(time.Now())
+	}
+	h.writeMu.Lock()
+	h.writeMu.Unlock()
 	if h.done != nil {
 		select {
 		case <-h.done:
