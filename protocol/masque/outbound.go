@@ -52,6 +52,7 @@ type Outbound struct {
 	startAccess sync.Mutex
 	started     bool
 	closed      bool
+	operations  sync.WaitGroup
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MASQUEOutboundOptions) (adapter.Outbound, error) {
@@ -257,7 +258,9 @@ func (w *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 				// Join cancellation of bootstrap before retiring any late client.
 				<-w.await
 			}
-			return common.Close(w.client)
+			err := common.Close(w.client)
+			w.operations.Wait()
+			return err
 		})
 		return nil
 	}
@@ -278,6 +281,11 @@ func (w *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 }
 
 func (w *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	ctx, finish, err := w.beginOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	if err := w.isTunnelInitialized(ctx); err != nil {
 		return nil, err
 	}
@@ -300,6 +308,11 @@ func (w *Outbound) DialContext(ctx context.Context, network string, destination 
 }
 
 func (w *Outbound) ListenPacketWithDestination(ctx context.Context, destination M.Socksaddr) (net.PacketConn, netip.Addr, error) {
+	ctx, finish, err := w.beginOperation(ctx)
+	if err != nil {
+		return nil, netip.Addr{}, err
+	}
+	defer finish()
 	if err := w.isTunnelInitialized(ctx); err != nil {
 		return nil, netip.Addr{}, err
 	}
@@ -350,6 +363,27 @@ func (w *Outbound) isTunnelInitialized(ctx context.Context) error {
 		return E.New("tunnel not initialized")
 	}
 	return nil
+}
+
+func (w *Outbound) beginOperation(ctx context.Context) (context.Context, func(), error) {
+	w.startAccess.Lock()
+	defer w.startAccess.Unlock()
+	if w.closed || w.ctx.Err() != nil {
+		return nil, nil, net.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	// Caller cancellation and serving-scope retirement both own pending DNS and
+	// transport work. Close closes admission before waiting for these operations.
+	w.operations.Add(1)
+	operationCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(w.ctx, cancel)
+	return operationCtx, func() {
+		stop()
+		cancel()
+		w.operations.Done()
+	}, nil
 }
 
 func (w *Outbound) createConfig() (*Config, error) {
