@@ -82,5 +82,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0051 | Own native mKCP serving streams, initial packet admission and drained retirement | ./transport/v2raykcp -race |
 | EXTENDED-0052 | Validate mKCP native arithmetic/window bounds and account for full UDP packet overhead | ./transport/v2raykcp -race |
+| EXTENDED-0053 | Accept the bounded stock mKCP AEAD nonce excess on receive while retaining the corrected outgoing MTU | ./transport/v2raykcp -race; independent pristine Shtorm client/server interoperability |
 
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
