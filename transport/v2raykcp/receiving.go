@@ -132,6 +132,7 @@ type ReceivingWorker struct {
 	acklist    *AckList
 	nextNumber uint32
 	windowSize uint32
+	closed     bool
 }
 
 func NewReceivingWorker(kcp *Connection) *ReceivingWorker {
@@ -146,8 +147,13 @@ func NewReceivingWorker(kcp *Connection) *ReceivingWorker {
 
 func (w *ReceivingWorker) Release() {
 	w.Lock()
+	w.closed = true
 	ReleaseMulti(w.leftOver)
 	w.leftOver = nil
+	for number, segment := range w.window.cache {
+		segment.Release()
+		delete(w.window.cache, number)
+	}
 	w.Unlock()
 }
 
@@ -164,7 +170,8 @@ func (w *ReceivingWorker) ProcessSegment(seg *DataSegment) {
 
 	number := seg.Number
 	idx := number - w.nextNumber
-	if idx >= w.windowSize {
+	if w.closed || idx >= w.windowSize {
+		seg.Release()
 		return
 	}
 	w.acklist.Clear(seg.SendingNext)
@@ -176,6 +183,12 @@ func (w *ReceivingWorker) ProcessSegment(seg *DataSegment) {
 }
 
 func (w *ReceivingWorker) ReadMultiBuffer() MultiBuffer {
+	w.Lock()
+	defer w.Unlock()
+	return w.readMultiBuffer()
+}
+
+func (w *ReceivingWorker) readMultiBuffer() MultiBuffer {
 	if w.leftOver != nil {
 		mb := w.leftOver
 		w.leftOver = nil
@@ -184,8 +197,6 @@ func (w *ReceivingWorker) ReadMultiBuffer() MultiBuffer {
 
 	mb := make(MultiBuffer, 0, 32)
 
-	w.Lock()
-	defer w.Unlock()
 	for {
 		seg := w.window.Remove(w.nextNumber)
 		if seg == nil {
@@ -200,7 +211,9 @@ func (w *ReceivingWorker) ReadMultiBuffer() MultiBuffer {
 }
 
 func (w *ReceivingWorker) Read(b []byte) int {
-	mb := w.ReadMultiBuffer()
+	w.Lock()
+	defer w.Unlock()
+	mb := w.readMultiBuffer()
 	if mb.IsEmpty() {
 		return 0
 	}
@@ -228,7 +241,9 @@ func (w *ReceivingWorker) Flush(current uint32) {
 	w.Lock()
 	defer w.Unlock()
 
-	w.acklist.Flush(current, w.conn.roundTrip.Timeout())
+	if !w.closed {
+		w.acklist.Flush(current, w.conn.roundTrip.Timeout())
+	}
 }
 
 func (w *ReceivingWorker) Write(seg Segment) error {

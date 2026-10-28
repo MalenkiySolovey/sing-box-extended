@@ -22,6 +22,7 @@ var _ adapter.V2RayServerTransport = (*Server)(nil)
 
 type Server struct {
 	ctx        context.Context
+	cancel     context.CancelFunc
 	logger     logger.ContextLogger
 	config     *Config
 	tlsConfig  tls.ServerConfig
@@ -30,6 +31,10 @@ type Server struct {
 	sessions   sync.Map // map[ConnectionID]*Connection
 	security   cipher.AEAD
 	headerSize int
+	mu         sync.Mutex
+	closed     bool
+	closeDone  chan struct{}
+	workers    sync.WaitGroup
 }
 
 type ConnectionID struct {
@@ -51,14 +56,17 @@ func NewServer(
 		return nil, E.Cause(err, "get security")
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
 	return &Server{
 		ctx:        ctx,
+		cancel:     cancel,
 		logger:     logger,
 		config:     config,
 		tlsConfig:  tlsConfig,
 		handler:    handler,
 		security:   security,
 		headerSize: HeaderSize(config.GetHeaderType()),
+		closeDone:  make(chan struct{}),
 	}, nil
 }
 
@@ -76,7 +84,15 @@ func (s *Server) ServePacket(listener net.PacketConn) error {
 		return E.New("KCP requires UDP listener")
 	}
 
+	s.mu.Lock()
+	if s.closed || s.listener != nil {
+		s.mu.Unlock()
+		return net.ErrClosed
+	}
 	s.listener = udpConn
+	s.workers.Add(1)
+	s.mu.Unlock()
+	defer s.workers.Done()
 	s.logger.Info("KCP server started")
 
 	buffer := make([]byte, 2048)
@@ -89,7 +105,9 @@ func (s *Server) ServePacket(listener net.PacketConn) error {
 			return err
 		}
 
-		go s.handlePacket(buffer[:n], remoteAddr)
+		// Parse and admit a session before this receive buffer is reused. TLS
+		// handshakes run separately so their next packet can enter that session.
+		s.handlePacket(buffer[:n], remoteAddr)
 	}
 }
 
@@ -119,9 +137,21 @@ func (s *Server) handlePacket(data []byte, remoteAddr net.Addr) {
 		Conv:   conv,
 	}
 
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		for _, segment := range segments {
+			segment.Release()
+		}
+		return
+	}
 	value, exists := s.sessions.Load(connID)
 	if !exists {
 		if cmd == CommandTerminate {
+			s.mu.Unlock()
+			for _, segment := range segments {
+				segment.Release()
+			}
 			return
 		}
 
@@ -143,37 +173,51 @@ func (s *Server) handlePacket(data []byte, remoteAddr net.Addr) {
 
 		kcpConn := NewConnection(meta, writer, writer, s.config)
 		s.sessions.Store(connID, kcpConn)
-
-		var netConn net.Conn = kcpConn
-		if s.tlsConfig != nil {
-			tlsConn, err := tls.ServerHandshake(s.ctx, kcpConn, s.tlsConfig)
-			if err != nil {
-				kcpConn.Close()
-				s.sessions.Delete(connID)
-				return
-			}
-			netConn = tlsConn
-		}
-
-		source := M.SocksaddrFromNet(remoteAddr)
-		go s.handler.NewConnectionEx(s.ctx, netConn, source, M.Socksaddr{}, nil)
-
+		s.workers.Add(1)
+		s.mu.Unlock()
 		kcpConn.Input(segments)
+		source := M.SocksaddrFromNet(remoteAddr)
+		go func() {
+			defer s.workers.Done()
+			var conn net.Conn = kcpConn
+			if s.tlsConfig != nil {
+				tlsConn, err := tls.ServerHandshake(s.ctx, conn, s.tlsConfig)
+				if err != nil {
+					kcpConn.Terminate()
+					return
+				}
+				conn = tlsConn
+			}
+			s.handler.NewConnectionEx(s.ctx, conn, source, M.Socksaddr{}, nil)
+		}()
 	} else {
+		s.mu.Unlock()
 		conn := value.(*Connection)
 		conn.Input(segments)
 	}
 }
 
 func (s *Server) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		<-s.closeDone
+		return nil
+	}
+	s.closed = true
+	s.cancel()
+	listener := s.listener
+	s.mu.Unlock()
+	if listener != nil {
+		_ = listener.Close()
+	}
 	s.sessions.Range(func(key, value interface{}) bool {
 		conn := value.(*Connection)
-		conn.Close()
+		conn.Terminate()
 		return true
 	})
-	if s.listener != nil {
-		return s.listener.Close()
-	}
+	s.workers.Wait()
+	close(s.closeDone)
 	return nil
 }
 

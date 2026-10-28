@@ -132,13 +132,16 @@ type ConnMetadata struct {
 type Connection struct {
 	meta             ConnMetadata
 	closer           io.Closer
-	rd               time.Time
-	wd               time.Time
+	rd               atomic.Int64
+	wd               atomic.Int64
+	done             chan struct{}
+	terminateOnce    sync.Once
 	since            int64
 	dataInput        chan struct{}
 	dataOutput       chan struct{}
 	Config           *Config
 	state            int32
+	stateMu          sync.Mutex
 	stateBeginTime   uint32
 	lastIncomingTime uint32
 	lastPingTime     uint32
@@ -158,6 +161,7 @@ func NewConnection(meta ConnMetadata, writer PacketWriter, closer io.Closer, con
 		since:      nowMillisec(),
 		dataInput:  make(chan struct{}, 1),
 		dataOutput: make(chan struct{}, 1),
+		done:       make(chan struct{}),
 		Config:     config,
 		output:     NewSegmentWriter(writer),
 		mss:        config.GetMTUValue() - uint32(writer.Overhead()) - uint32(DataSegmentOverhead),
@@ -205,9 +209,15 @@ func (c *Connection) State() State {
 }
 
 func (c *Connection) SetState(state State) {
+	c.stateMu.Lock()
+	if c.State() == StateTerminated {
+		c.stateMu.Unlock()
+		return
+	}
 	current := c.Elapsed()
 	atomic.StoreInt32(&c.state, int32(state))
 	atomic.StoreUint32(&c.stateBeginTime, current)
+	c.stateMu.Unlock()
 
 	switch state {
 	case StateReadyToClose:
@@ -235,17 +245,19 @@ func (c *Connection) Terminate() {
 	if c == nil {
 		return
 	}
-	time.Sleep(8 * time.Second)
-
-	if c.closer != nil {
-		c.closer.Close()
-	}
-	if c.sendingWorker != nil {
+	c.terminateOnce.Do(func() {
+		c.stateMu.Lock()
+		atomic.StoreInt32(&c.state, int32(StateTerminated))
+		c.stateMu.Unlock()
+		close(c.done)
+		if c.closer != nil {
+			_ = c.closer.Close()
+		}
+		c.dataUpdater.Stop()
+		c.pingUpdater.Stop()
 		c.sendingWorker.Release()
-	}
-	if c.receivingWorker != nil {
 		c.receivingWorker.Release()
-	}
+	})
 }
 
 func (c *Connection) HandleOption(opt SegmentOption) {
@@ -264,6 +276,12 @@ func (c *Connection) OnPeerClosed() {
 }
 
 func (c *Connection) Input(segments []Segment) {
+	if c.State() == StateTerminated {
+		for _, segment := range segments {
+			segment.Release()
+		}
+		return
+	}
 	current := c.Elapsed()
 	atomic.StoreUint32(&c.lastIncomingTime, current)
 
@@ -334,18 +352,20 @@ func (c *Connection) waitForDataInput() error {
 	}
 
 	duration := time.Second * 16
-	if !c.rd.IsZero() {
-		duration = time.Until(c.rd)
+	if deadline := c.rd.Load(); deadline != 0 {
+		duration = time.Until(time.Unix(0, deadline))
 		if duration < 0 {
 			return ErrIOTimeout
 		}
 	}
 
 	select {
+	case <-c.done:
+		return io.EOF
 	case <-c.dataInput:
 		return nil
 	case <-time.After(duration):
-		if !c.rd.IsZero() && c.rd.Before(time.Now()) {
+		if deadline := c.rd.Load(); deadline != 0 && deadline <= time.Now().UnixNano() {
 			return ErrIOTimeout
 		}
 		return nil
@@ -389,18 +409,20 @@ func (c *Connection) waitForDataOutput() error {
 	}
 
 	duration := time.Second * 16
-	if !c.wd.IsZero() {
-		duration = time.Until(c.wd)
+	if deadline := c.wd.Load(); deadline != 0 {
+		duration = time.Until(time.Unix(0, deadline))
 		if duration < 0 {
 			return ErrIOTimeout
 		}
 	}
 
 	select {
+	case <-c.done:
+		return io.ErrClosedPipe
 	case <-c.dataOutput:
 		return nil
 	case <-time.After(duration):
-		if !c.wd.IsZero() && c.wd.Before(time.Now()) {
+		if deadline := c.wd.Load(); deadline != 0 && deadline <= time.Now().UnixNano() {
 			return ErrIOTimeout
 		}
 		return nil
@@ -540,7 +562,15 @@ func (c *Connection) SetReadDeadline(t time.Time) error {
 	if c == nil {
 		return ErrClosedConnection
 	}
-	c.rd = t
+	if t.IsZero() {
+		c.rd.Store(0)
+	} else {
+		c.rd.Store(t.UnixNano())
+	}
+	select {
+	case c.dataInput <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -548,7 +578,15 @@ func (c *Connection) SetWriteDeadline(t time.Time) error {
 	if c == nil {
 		return ErrClosedConnection
 	}
-	c.wd = t
+	if t.IsZero() {
+		c.wd.Store(0)
+	} else {
+		c.wd.Store(t.UnixNano())
+	}
+	select {
+	case c.dataOutput <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
