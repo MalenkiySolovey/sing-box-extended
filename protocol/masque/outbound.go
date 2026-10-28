@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -47,7 +48,10 @@ type Outbound struct {
 	client       tunnelClient
 	startHandler func()
 
-	await chan struct{}
+	await       chan struct{}
+	startAccess sync.Mutex
+	started     bool
+	closed      bool
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MASQUEOutboundOptions) (adapter.Outbound, error) {
@@ -64,6 +68,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		await:     make(chan struct{}),
 	}
 	outbound.startHandler = func() {
+		ctx := outbound.ctx
 		defer close(outbound.await)
 		cacheFile := service.FromContext[adapter.CacheFile](ctx)
 		var appConfig *Config
@@ -238,15 +243,33 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 }
 
 func (w *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage == adapter.StartStateInitialize {
+		w.ctx = scope.Context()
+		scope.Add(func() error {
+			w.startAccess.Lock()
+			w.closed = true
+			started := w.started
+			w.startAccess.Unlock()
+			if started {
+				// Join cancellation of bootstrap before retiring any late client.
+				<-w.await
+			}
+			return common.Close(w.client)
+		})
+		return nil
+	}
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}
-	scope.Add(func() error {
-		if err := w.isTunnelInitialized(w.ctx); err != nil {
-			return err
-		}
-		return w.client.Close()
-	})
+	w.startAccess.Lock()
+	defer w.startAccess.Unlock()
+	if w.closed || w.ctx.Err() != nil {
+		return net.ErrClosed
+	}
+	if w.started {
+		return nil
+	}
+	w.started = true
 	go w.startHandler()
 	return nil
 }
@@ -308,9 +331,17 @@ func (w *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 
 func (w *Outbound) isTunnelInitialized(ctx context.Context) error {
 	select {
+	case <-w.ctx.Done():
+		return net.ErrClosed
 	case <-w.await:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if w.ctx.Err() != nil {
+		return net.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if w.client == nil {
 		return E.New("tunnel not initialized")
