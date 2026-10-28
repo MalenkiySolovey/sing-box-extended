@@ -3,8 +3,10 @@ package transport
 import (
 	"context"
 	"errors"
+	"github.com/ameshkov/dnsstamps"
 	"io"
 	"net"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,9 +18,125 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/service"
 
 	mDNS "github.com/miekg/dns"
 )
+
+type sdnsOutboundManager struct{ adapter.OutboundManager }
+type sdnsTestDialer struct {
+	dial func(context.Context) (net.Conn, error)
+}
+
+func (d sdnsTestDialer) DialContext(ctx context.Context, _ string, _ M.Socksaddr) (net.Conn, error) {
+	return d.dial(ctx)
+}
+func (d sdnsTestDialer) ListenPacket(context.Context, M.Socksaddr) (net.PacketConn, error) {
+	return nil, errors.New("unused packet listener")
+}
+func sdnsTestStamp() string {
+	return (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeDNSCrypt, ServerAddrStr: "127.0.0.1:15353", ServerPk: make([]byte, 32), ProviderName: "2.dnscrypt-cert.fixture.invalid"}).String()
+}
+
+func TestSDNSIdentityAndStampValidation(t *testing.T) {
+	ctx := service.ContextWith[adapter.OutboundManager](context.Background(), sdnsOutboundManager{})
+	options := option.SDNSDNSServerOptions{Stamp: sdnsTestStamp()}
+	options.Detour = "native-egress"
+	options.DomainResolver = &option.DomainResolveOptions{Server: "bootstrap"}
+	raw, err := NewSDNSTransport(ctx, log.NewNOPFactory().NewLogger("fixture"), "private-dns", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := raw.(*SDNSTransport)
+	defer transport.Close()
+	if transport.Type() != C.DNSTypeSDNS || transport.Tag() != "private-dns" || transport.Name() != transport.Tag() || !reflect.DeepEqual(transport.Dependencies(), []string{"bootstrap"}) || !reflect.DeepEqual(transport.References(), []string{"native-egress"}) {
+		t.Fatal("SDNS lost its runtime identity or resolver/detour dependencies")
+	}
+	for _, stamp := range []string{"", "sdns://not-a-stamp", (&dnsstamps.ServerStamp{Proto: dnsstamps.StampProtoTypeDoH, ServerAddrStr: "127.0.0.1:443", ProviderName: "private.invalid", Path: "/dns-query"}).String()} {
+		options.Stamp = stamp
+		if _, err := NewSDNSTransport(context.Background(), nil, "invalid", options); err == nil || err.Error() != "invalid DNSCrypt resolver stamp" {
+			t.Fatal("invalid or non-DNSCrypt stamp reached dialer construction")
+		}
+	}
+}
+
+func TestSDNSQueryAndServingCancellationDrain(t *testing.T) {
+	for _, retirement := range []string{"query", "scope"} {
+		t.Run(retirement, func(t *testing.T) {
+			raw, err := NewSDNSTransport(context.Background(), log.NewNOPFactory().NewLogger("fixture"), "private-dns", option.SDNSDNSServerOptions{Stamp: sdnsTestStamp()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := raw.(*SDNSTransport)
+			defer transport.Close()
+			scope := adapter.NewScope(context.Background(), log.NewNOPFactory().NewLogger("scope"))
+			defer scope.Close()
+			if err := transport.Start(adapter.StartStateInitialize, scope); err != nil {
+				t.Fatal(err)
+			}
+			client, peer := net.Pipe()
+			defer peer.Close()
+			queryRead := make(chan struct{})
+			peerDone := make(chan struct{})
+			go func() {
+				defer close(peerDone)
+				buffer := make([]byte, 4096)
+				_, _ = peer.Read(buffer)
+				close(queryRead)
+				_, _ = peer.Read(buffer)
+			}()
+			transport.dialer = sdnsTestDialer{dial: func(ctx context.Context) (net.Conn, error) {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				return client, nil
+			}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			query := new(mDNS.Msg)
+			query.SetQuestion("example.invalid.", mDNS.TypeA)
+			finished := make(chan error, 1)
+			go func() { _, err := transport.Exchange(ctx, query); finished <- err }()
+			select {
+			case <-queryRead:
+			case <-time.After(time.Second):
+				t.Fatal("certificate query did not start")
+			}
+			if retirement == "query" {
+				cancel()
+			} else {
+				closed := make(chan error, 1)
+				go func() { closed <- scope.Close() }()
+				select {
+				case err := <-closed:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("serving retirement did not drain SDNS")
+				}
+			}
+			select {
+			case err := <-finished:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("query cancellation lost: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("pending certificate I/O ignored cancellation")
+			}
+			select {
+			case <-peerDone:
+			case <-time.After(time.Second):
+				t.Fatal("query socket survived retirement")
+			}
+			if retirement == "scope" {
+				if _, err := transport.Exchange(context.Background(), query); !errors.Is(err, net.ErrClosed) {
+					t.Fatal("retired SDNS admitted new query")
+				}
+			}
+		})
+	}
+}
 
 func TestTCPTransportRetriesReadErrorOnReusedConn(t *testing.T) {
 	t.Parallel()
