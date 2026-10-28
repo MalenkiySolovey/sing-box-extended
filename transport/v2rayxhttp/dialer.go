@@ -53,7 +53,9 @@ func (c *DefaultDialerClient) Close() {
 		return
 	}
 	c.closed = true
-	c.client.Transport = force_close.ResetTransport(c.client.Transport)
+	// A published http.Client must remain immutable while admitted requests
+	// still use it. This client is retired, so the replacement is never needed.
+	_ = force_close.ResetTransport(c.client.Transport)
 }
 
 func (c *DefaultDialerClient) IsClosed() bool {

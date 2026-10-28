@@ -30,3 +30,19 @@ func TestXHTTPOpenStreamPublishesConnectionResultOnce(t *testing.T) {
 		t.Fatal("connection failure was published as a successful dial")
 	}
 }
+
+func TestXHTTPRetirementKeepsPublishedClientImmutable(t *testing.T) {
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &DefaultDialerClient{client: &http.Client{Transport: transport}}
+	client.Close()
+	client.Close()
+	if !client.IsClosed() {
+		t.Fatal("retired XHTTP client remained available")
+	}
+	// Do reads this field without our mutex. Closing the transport must not
+	// rewrite a published http.Client while an admitted POST is still using it.
+	if client.client.Transport != transport {
+		t.Fatal("retirement mutated the published HTTP client transport")
+	}
+}
