@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net"
+	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/tls"
@@ -21,11 +22,18 @@ import (
 var _ adapter.V2RayClientTransport = (*Client)(nil)
 
 type Client struct {
-	ctx        context.Context
-	dialer     N.Dialer
-	serverAddr M.Socksaddr
-	config     *Config
-	tlsConfig  tls.Config
+	ctx         context.Context
+	cancel      context.CancelFunc
+	dialer      N.Dialer
+	serverAddr  M.Socksaddr
+	config      *Config
+	tlsConfig   tls.Config
+	mu          sync.Mutex
+	closed      bool
+	closeDone   chan struct{}
+	connections map[*Connection]struct{}
+	pending     sync.WaitGroup
+	readers     sync.WaitGroup
 }
 
 func NewClient(
@@ -35,18 +43,34 @@ func NewClient(
 	options option.V2RayKCPOptions,
 	tlsConfig tls.Config,
 ) (adapter.V2RayClientTransport, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	return &Client{
-		ctx:        ctx,
-		dialer:     dialer,
-		serverAddr: serverAddr,
-		config:     NewConfig(options),
-		tlsConfig:  tlsConfig,
+		ctx:         ctx,
+		cancel:      cancel,
+		dialer:      dialer,
+		serverAddr:  serverAddr,
+		config:      NewConfig(options),
+		tlsConfig:   tlsConfig,
+		closeDone:   make(chan struct{}),
+		connections: make(map[*Connection]struct{}),
 	}, nil
 }
 
 func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
+	c.mu.Lock()
+	if c.closed || c.ctx.Err() != nil {
+		c.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	c.pending.Add(1)
+	c.mu.Unlock()
+	defer c.pending.Done()
+	dialCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.ctx, cancel)
+	defer stop()
+	defer cancel()
 	// Dial UDP connection
-	udpConn, err := c.dialer.DialContext(ctx, N.NetworkUDP, c.serverAddr)
+	udpConn, err := c.dialer.DialContext(dialCtx, N.NetworkUDP, c.serverAddr)
 	if err != nil {
 		return nil, E.Cause(err, "dial UDP")
 	}
@@ -59,17 +83,27 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	binary.Read(rand.Reader, binary.BigEndian, &convID)
 
 	// Create KCP connection
-	kcpConn, err := c.createConnection(ctx, packetConn, c.serverAddr.UDPAddr(), convID)
+	kcpConn, err := c.createConnection(packetConn, c.serverAddr.UDPAddr(), convID)
 	if err != nil {
 		udpConn.Close()
 		return nil, E.Cause(err, "create KCP connection")
 	}
+	c.mu.Lock()
+	if c.closed || dialCtx.Err() != nil {
+		c.mu.Unlock()
+		kcpConn.Terminate()
+		return nil, net.ErrClosed
+	}
+	c.connections[kcpConn] = struct{}{}
+	c.readers.Add(1)
+	go c.readLoop(packetConn, kcpConn)
+	c.mu.Unlock()
 
 	// Wrap with TLS if configured
 	if c.tlsConfig != nil {
-		tlsConn, err := tls.ClientHandshake(ctx, kcpConn, c.tlsConfig)
+		tlsConn, err := tls.ClientHandshake(dialCtx, kcpConn, c.tlsConfig)
 		if err != nil {
-			kcpConn.Close()
+			kcpConn.Terminate()
 			return nil, E.Cause(err, "TLS handshake")
 		}
 		return tlsConn, nil
@@ -79,10 +113,29 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 }
 
 func (c *Client) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		<-c.closeDone
+		return nil
+	}
+	c.closed = true
+	c.cancel()
+	connections := make([]*Connection, 0, len(c.connections))
+	for conn := range c.connections {
+		connections = append(connections, conn)
+	}
+	c.mu.Unlock()
+	for _, conn := range connections {
+		conn.Terminate()
+	}
+	c.pending.Wait()
+	c.readers.Wait()
+	close(c.closeDone)
 	return nil
 }
 
-func (c *Client) createConnection(ctx context.Context, conn N.PacketConn, remoteAddr *net.UDPAddr, convID uint16) (*Connection, error) {
+func (c *Client) createConnection(conn N.PacketConn, remoteAddr *net.UDPAddr, convID uint16) (*Connection, error) {
 	security, err := c.config.GetSecurity()
 	if err != nil {
 		return nil, E.Cause(err, "get security")
@@ -99,12 +152,6 @@ func (c *Client) createConnection(ctx context.Context, conn N.PacketConn, remote
 		security:   security,
 	}
 
-	// Create packet reader
-	reader := &kcpPacketReader{
-		security:   security,
-		headerSize: HeaderSize(c.config.GetHeaderType()),
-	}
-
 	// Create connection metadata
 	meta := ConnMetadata{
 		LocalAddr:    conn.LocalAddr(),
@@ -115,20 +162,22 @@ func (c *Client) createConnection(ctx context.Context, conn N.PacketConn, remote
 	// Create KCP connection
 	kcpConn := NewConnection(meta, writer, conn, c.config)
 
-	// Start reading goroutine
-	go c.readLoop(ctx, conn, reader, kcpConn)
-
 	return kcpConn, nil
 }
 
-func (c *Client) readLoop(ctx context.Context, conn N.PacketConn, reader *kcpPacketReader, kcpConn *Connection) {
+func (c *Client) readLoop(conn N.PacketConn, kcpConn *Connection) {
+	defer c.readers.Done()
+	stop := context.AfterFunc(c.ctx, kcpConn.Terminate)
+	defer stop()
+	defer func() {
+		kcpConn.Terminate()
+		c.mu.Lock()
+		delete(c.connections, kcpConn)
+		c.mu.Unlock()
+	}()
+	security, _ := c.config.GetSecurity()
+	reader := &kcpPacketReader{security: security, headerSize: HeaderSize(c.config.GetHeaderType())}
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
 		buffer := buf.New()
 		_, err := conn.ReadPacket(buffer)
 		if err != nil {
