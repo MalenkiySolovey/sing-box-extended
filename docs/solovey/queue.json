@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "aeabc09d847a05d449e76a3fb7cbf5f1999d6e6d",
+  "codeTree": "b4159ef16d381a879557cc4c602301b8f3f341f7",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -55,7 +55,8 @@
     "EXTENDED-0044",
     "EXTENDED-0045",
     "EXTENDED-0046",
-    "EXTENDED-0047"
+    "EXTENDED-0047",
+    "EXTENDED-0048"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
