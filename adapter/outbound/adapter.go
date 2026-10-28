@@ -1,6 +1,7 @@
 package outbound
 
 import (
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 )
 
@@ -26,6 +27,19 @@ func NewAdapterWithDialerOptions(outboundType string, outboundTag string, networ
 		dependencies = []string{dialOptions.Detour}
 	}
 	return NewAdapter(outboundType, outboundTag, network, dependencies)
+}
+
+// A split XHTTP download uses another canonical outbound just like a root
+// detour. Include it in startup ordering, cycle checks and removal protection.
+func NewAdapterWithDialerOptionsAndTransport(outboundType string, outboundTag string, network []string, dialOptions option.DialerOptions, transport *option.V2RayTransportOptions) Adapter {
+	adapter := NewAdapterWithDialerOptions(outboundType, outboundTag, network, dialOptions)
+	if transport != nil && transport.Type == C.V2RayTransportTypeXHTTP && transport.XHTTPOptions.Download != nil {
+		detour := transport.XHTTPOptions.Download.Detour
+		if detour != "" && detour != dialOptions.Detour {
+			adapter.dependencies = append(adapter.dependencies, detour)
+		}
+	}
+	return adapter
 }
 
 func (a *Adapter) Type() string {
