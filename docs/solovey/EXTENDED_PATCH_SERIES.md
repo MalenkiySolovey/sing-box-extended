@@ -85,4 +85,7 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0053 | Accept the bounded stock mKCP AEAD nonce excess on receive while retaining the corrected outgoing MTU | ./transport/v2raykcp -race; independent pristine Shtorm client/server interoperability |
 | EXTENDED-0054 | Retire the XHTTP transport without rewriting a published http.Client while admitted requests still use it | ./transport/v2rayxhttp -race; Panel native XHTTP restart -race |
 
+| EXTENDED-0055 | Preserve SDNS runtime identity, resolver/detour dependencies and caller/serving cancellation; drain admitted DNSCrypt query I/O | ./dns/transport -race -run TestSDNS |
+| EXTENDED-0056 | Resolve fallback DNS children at dependency-ordered start and validate candidates before construction | ./dns/transport/fallback -race |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
