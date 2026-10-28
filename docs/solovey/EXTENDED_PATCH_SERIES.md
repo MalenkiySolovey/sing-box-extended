@@ -74,4 +74,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0047 | Validate native MASQUE endpoint, congestion control and existing-profile credential pairing before asynchronous remote profile effects | ./protocol/masque -race |
 
+| EXTENDED-0048 | Cancel and join admitted MASQUE DNS and transport operations when their serving scope retires | ./protocol/masque -race |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
