@@ -17,6 +17,7 @@ import (
 	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/congestion"
+	commondialer "github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/common/xray/buf"
 	"github.com/sagernet/sing-box/common/xray/net"
@@ -81,11 +82,11 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 		options2 := options.Download
 		dialer2 := dialer
 		if options2.Detour != "" {
-			var ok bool
-			dialer2, ok = service.FromContext[adapter.OutboundManager](ctx).Outbound(options2.Detour)
-			if !ok {
-				return nil, E.New("outbound detour not found: ", options2.Detour)
+			manager := service.FromContext[adapter.OutboundManager](ctx)
+			if manager == nil {
+				return nil, E.New("missing outbound manager")
 			}
+			dialer2 = commondialer.NewDetour(manager, options2.Detour, false)
 		}
 		dest2 := options2.ServerOptions.Build()
 		var tlsConfig2 tls.Config
