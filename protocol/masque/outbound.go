@@ -55,6 +55,18 @@ type Outbound struct {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MASQUEOutboundOptions) (adapter.Outbound, error) {
+	// Candidate checks construct without starting. Reject invalid local options
+	// before profile registration or key enrollment can have external effects.
+	if options.Address != "" && net.ParseIP(options.Address) == nil {
+		return nil, E.New("invalid MASQUE endpoint address")
+	}
+	if (options.Profile.ID == "") != (options.Profile.AuthToken == "") {
+		return nil, E.New("MASQUE profile ID and auth token must be supplied together")
+	}
+	congestionControl, err := congestion.NewCongestionControl(options.CongestionController, options.CWND, ntp.TimeFuncFromContext(ctx))
+	if err != nil {
+		return nil, E.New("invalid MASQUE congestion control")
+	}
 	networks := []string{N.NetworkTCP, N.NetworkUDP}
 	if options.UseL4Proxy {
 		networks = []string{N.NetworkTCP}
@@ -170,15 +182,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			RemoteIsDomain:   false,
 			ResolverOnDetour: true,
 		})
-		if err != nil {
-			logger.ErrorContext(ctx, err)
-			return
-		}
-		congestionControl, err := congestion.NewCongestionControl(
-			options.CongestionController,
-			options.CWND,
-			ntp.TimeFuncFromContext(ctx),
-		)
 		if err != nil {
 			logger.ErrorContext(ctx, err)
 			return
