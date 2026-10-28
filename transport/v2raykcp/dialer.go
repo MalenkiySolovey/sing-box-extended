@@ -43,13 +43,17 @@ func NewClient(
 	options option.V2RayKCPOptions,
 	tlsConfig tls.Config,
 ) (adapter.V2RayClientTransport, error) {
+	config := NewConfig(options)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &Client{
 		ctx:         ctx,
 		cancel:      cancel,
 		dialer:      dialer,
 		serverAddr:  serverAddr,
-		config:      NewConfig(options),
+		config:      config,
 		tlsConfig:   tlsConfig,
 		closeDone:   make(chan struct{}),
 		connections: make(map[*Connection]struct{}),
@@ -178,7 +182,7 @@ func (c *Client) readLoop(conn N.PacketConn, kcpConn *Connection) {
 	security, _ := c.config.GetSecurity()
 	reader := &kcpPacketReader{security: security, headerSize: HeaderSize(c.config.GetHeaderType())}
 	for {
-		buffer := buf.New()
+		buffer := buf.NewSize(int(c.config.GetMTUValue()))
 		_, err := conn.ReadPacket(buffer)
 		if err != nil {
 			buffer.Release()
@@ -207,13 +211,13 @@ func (w *kcpPacketWriter) Overhead() int {
 		overhead += w.header.Size()
 	}
 	if w.security != nil {
-		overhead += w.security.Overhead()
+		overhead += w.security.NonceSize() + w.security.Overhead()
 	}
 	return overhead
 }
 
 func (w *kcpPacketWriter) Write(b []byte) (int, error) {
-	packet := buf.New()
+	packet := buf.NewSize(len(b) + w.Overhead())
 	defer packet.Release()
 
 	if w.header != nil {
