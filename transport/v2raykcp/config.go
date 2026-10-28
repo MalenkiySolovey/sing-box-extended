@@ -77,6 +77,16 @@ func (c *Config) GetMTUValue() uint32 {
 	return c.MTU
 }
 
+// Pristine Shtorm excludes the transmitted AEAD nonce from its MTU budget.
+// Accept that bounded legacy excess without changing our emitted packet size.
+func (c *Config) packetReadSize(security cipher.AEAD) int {
+	size := int(c.GetMTUValue())
+	if security != nil {
+		size += security.NonceSize()
+	}
+	return min(size, 65507)
+}
+
 // GetTTIValue returns the value of TTI settings.
 func (c *Config) GetTTIValue() uint32 {
 	if c == nil || c.TTI == 0 {

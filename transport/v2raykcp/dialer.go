@@ -182,7 +182,7 @@ func (c *Client) readLoop(conn N.PacketConn, kcpConn *Connection) {
 	security, _ := c.config.GetSecurity()
 	reader := &kcpPacketReader{security: security, headerSize: HeaderSize(c.config.GetHeaderType())}
 	for {
-		buffer := buf.NewSize(int(c.config.GetMTUValue()))
+		buffer := buf.NewSize(c.config.packetReadSize(security))
 		_, err := conn.ReadPacket(buffer)
 		if err != nil {
 			buffer.Release()
