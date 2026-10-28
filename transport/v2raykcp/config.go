@@ -2,6 +2,7 @@ package v2raykcp
 
 import (
 	"crypto/cipher"
+	"errors"
 
 	"github.com/sagernet/sing-box/option"
 )
@@ -32,6 +33,40 @@ func NewConfig(options option.V2RayKCPOptions) *Config {
 		HeaderType:       options.GetHeaderType(),
 		Seed:             options.Seed,
 	}
+}
+
+// Validate rejects options that cannot be represented by the wire windows or
+// native arithmetic before a constructor can allocate a serving connection.
+func (c *Config) Validate() error {
+	if c.GetTTIValue() > 1000 {
+		return errors.New("KCP tti must not exceed 1000 milliseconds")
+	}
+	switch c.GetHeaderType() {
+	case "none", "srtp", "utp", "wechat-video", "dtls", "wireguard":
+	default:
+		return errors.New("KCP header type is unknown")
+	}
+	security, err := c.GetSecurity()
+	if err != nil {
+		return err
+	}
+	minimum := uint32(NewAckSegment().ByteSize()) + 4*ackNumberLimit + uint32(HeaderSize(c.GetHeaderType())+security.NonceSize()+security.Overhead())
+	if c.GetMTUValue() < minimum || c.GetMTUValue() > 65507 {
+		return errors.New("KCP mtu cannot hold native segments in a UDP datagram")
+	}
+	if c.ReadBufferSize > 4095 || c.WriteBufferSize > 4095 {
+		return errors.New("KCP buffer size overflows native byte capacity")
+	}
+	for _, capacity := range []uint32{c.GetUplinkCapacityValue(), c.GetDownlinkCapacityValue()} {
+		if c.inFlightSize(capacity) > 0x7fffffff {
+			return errors.New("KCP capacity exceeds the native sequence window")
+		}
+	}
+	return nil
+}
+
+func (c *Config) inFlightSize(capacity uint32) uint64 {
+	return uint64(capacity) * 1024 * 1024 / uint64(c.GetMTUValue()) / uint64(1000/c.GetTTIValue())
 }
 
 // GetMTUValue returns the value of MTU settings.
@@ -104,7 +139,7 @@ func (c *Config) GetPacketHeader() PacketHeader {
 }
 
 func (c *Config) GetSendingInFlightSize() uint32 {
-	size := c.GetUplinkCapacityValue() * 1024 * 1024 / c.GetMTUValue() / (1000 / c.GetTTIValue())
+	size := uint32(c.inFlightSize(c.GetUplinkCapacityValue()))
 	if size < 8 {
 		size = 8
 	}
@@ -116,7 +151,7 @@ func (c *Config) GetSendingBufferSize() uint32 {
 }
 
 func (c *Config) GetReceivingInFlightSize() uint32 {
-	size := c.GetDownlinkCapacityValue() * 1024 * 1024 / c.GetMTUValue() / (1000 / c.GetTTIValue())
+	size := uint32(c.inFlightSize(c.GetDownlinkCapacityValue()))
 	if size < 8 {
 		size = 8
 	}

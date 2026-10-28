@@ -51,6 +51,9 @@ func NewServer(
 	handler adapter.V2RayServerTransportHandler,
 ) (adapter.V2RayServerTransport, error) {
 	config := NewConfig(options)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	security, err := config.GetSecurity()
 	if err != nil {
 		return nil, E.Cause(err, "get security")
@@ -95,7 +98,7 @@ func (s *Server) ServePacket(listener net.PacketConn) error {
 	defer s.workers.Done()
 	s.logger.Info("KCP server started")
 
-	buffer := make([]byte, 2048)
+	buffer := make([]byte, s.config.GetMTUValue())
 	for {
 		n, remoteAddr, err := udpConn.ReadFrom(buffer)
 		if err != nil {
@@ -236,13 +239,13 @@ func (w *serverPacketWriter) Overhead() int {
 		overhead += w.header.Size()
 	}
 	if w.security != nil {
-		overhead += w.security.Overhead()
+		overhead += w.security.NonceSize() + w.security.Overhead()
 	}
 	return overhead
 }
 
 func (w *serverPacketWriter) Write(b []byte) (int, error) {
-	buffer := buf.New()
+	buffer := buf.NewSize(len(b) + w.Overhead())
 	defer buffer.Release()
 
 	if w.header != nil {
