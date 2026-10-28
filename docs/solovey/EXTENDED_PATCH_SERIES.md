@@ -78,4 +78,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0049 | Resolve XHTTP split download detours lazily and declare native VLESS/VMess/Trojan dependencies | ./protocol/vless -race |
 
+| EXTENDED-0050 | Publish XHTTP connection metadata/errors once without late HTTP worker mutation | ./transport/v2rayxhttp -race |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
