@@ -62,16 +62,22 @@ func (c *DefaultDialerClient) IsClosed() bool {
 	return c.closed
 }
 
-func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessionId string, body io.Reader, uploadOnly bool) (wrc io.ReadCloser, remoteAddr, localAddr net.Addr, err error) {
+func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessionId string, body io.Reader, uploadOnly bool) (io.ReadCloser, net.Addr, net.Addr, error) {
 	// this is done when the TCP/UDP connection to the server was established,
 	// and we can unblock the Dial function and print correct net addresses in
 	// logs
-	gotConn := done.New()
+	type connectionResult struct {
+		remote, local net.Addr
+		err           error
+	}
+	gotConn := make(chan connectionResult, 1)
+	var connected sync.Once
+	publish := func(result connectionResult) {
+		connected.Do(func() { gotConn <- result })
+	}
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GotConn: func(connInfo httptrace.GotConnInfo) {
-			remoteAddr = connInfo.Conn.RemoteAddr()
-			localAddr = connInfo.Conn.LocalAddr()
-			gotConn.Close()
+			publish(connectionResult{remote: connInfo.Conn.RemoteAddr(), local: connInfo.Conn.LocalAddr()})
 		},
 	})
 	method := "GET" // stream-down
@@ -85,16 +91,15 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 		return nil, nil, nil, err
 	}
 	FillStreamRequest(req, sessionId, "", c.options)
-	wrc = &WaitReadCloser{wait: done.New(), Cancel: cancel}
+	wrc := &WaitReadCloser{wait: done.New(), Cancel: cancel}
 	go func() {
-		var resp *http.Response
-		resp, err = c.client.Do(req)
+		resp, err := c.client.Do(req)
 		if err != nil {
 			if !uploadOnly && !errors.Is(err, context.Canceled) { // stream-down is enough
 				c.Close()
 			}
 			cancel()
-			gotConn.Close()
+			publish(connectionResult{err: err})
 			common.Close(body)
 			wrc.Close()
 			return
@@ -107,10 +112,10 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 			wrc.Close()
 			return
 		}
-		wrc.(*WaitReadCloser).Set(resp.Body)
+		wrc.Set(resp.Body)
 	}()
-	<-gotConn.Wait()
-	return
+	result := <-gotConn
+	return wrc, result.remote, result.local, result.err
 }
 
 func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessionId string, seqStr string, payload buf.MultiBuffer) error {
