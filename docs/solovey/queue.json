@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "b4159ef16d381a879557cc4c602301b8f3f341f7",
+  "codeTree": "8b254352d1fd87210a06e84729db8f88e9b66d9d",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -56,7 +56,8 @@
     "EXTENDED-0045",
     "EXTENDED-0046",
     "EXTENDED-0047",
-    "EXTENDED-0048"
+    "EXTENDED-0048",
+    "EXTENDED-0049"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
@@ -91,7 +92,8 @@
     "./transport/call/livekit",
     "./transport/call/dion",
     "./transport/trusttunnel",
-    "./protocol/masque"
+    "./protocol/masque",
+    "./protocol/vless"
   ],
   "buildTags": "with_quic,with_grpc,with_utls,with_gvisor",
   "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",
