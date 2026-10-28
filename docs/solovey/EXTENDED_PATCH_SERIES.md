@@ -70,4 +70,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 
 | EXTENDED-0045 | Retire native Bond borrowed raw legs and request handshakes through the serving Scope while retaining canonical outbound ownership | ./protocol/bond ./protocol/failover -race |
 
+| EXTENDED-0046 | Cancel and join native MASQUE bootstrap through the serving Scope, retire late client publication and reject closed-parent admission | ./protocol/masque -race |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
