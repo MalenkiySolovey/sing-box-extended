@@ -98,7 +98,7 @@ func (s *Server) ServePacket(listener net.PacketConn) error {
 	defer s.workers.Done()
 	s.logger.Info("KCP server started")
 
-	buffer := make([]byte, s.config.GetMTUValue())
+	buffer := make([]byte, s.config.packetReadSize(s.security))
 	for {
 		n, remoteAddr, err := udpConn.ReadFrom(buffer)
 		if err != nil {
