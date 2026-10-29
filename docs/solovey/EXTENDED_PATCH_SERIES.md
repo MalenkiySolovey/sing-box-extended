@@ -89,4 +89,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0056 | Resolve fallback DNS children at dependency-ordered start and validate candidates before construction | ./dns/transport/fallback -race |
 | EXTENDED-0057 | Accept intentional scope-owned XHTTP listener closure while retaining real close errors; LOW, generic, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after equivalent upstream retirement behavior | ./transport/v2rayxhttp -race -run TestXHTTPServerCloseAfterScopeListenerClose; Panel native XHTTP restart |
 
+| EXTENDED-0058 | Retire and join Realm HTTP/2 sockets and handlers, cancel request contexts, revoke old-generation registration and normalize expected listener closure; LOW, generic, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after equivalent upstream scoped retirement | ./protocol/hysteria2 -race -run TestRealmScopeRetiresHTTP2Authority; Panel native Realm HTTP/2 authentication, quota and closed-generation regression |
+
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.

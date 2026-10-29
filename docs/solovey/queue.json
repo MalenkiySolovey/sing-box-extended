@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "cd77932e525d38a7871dd97db66da01d07f866a2",
+  "codeTree": "70b07e3301fc26ee5d03c943cc9739eb858d57b2",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -65,7 +65,8 @@
     "EXTENDED-0054",
     "EXTENDED-0055",
     "EXTENDED-0056",
-    "EXTENDED-0057"
+    "EXTENDED-0057",
+    "EXTENDED-0058"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
@@ -105,7 +106,8 @@
     "./transport/v2rayxhttp",
     "./transport/v2raykcp",
     "./dns/transport",
-    "./dns/transport/fallback"
+    "./dns/transport/fallback",
+    "./protocol/hysteria2"
   ],
   "buildTags": "with_quic,with_grpc,with_utls,with_gvisor",
   "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",
