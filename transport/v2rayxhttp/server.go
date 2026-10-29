@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -436,7 +437,13 @@ func (s *Server) ServePacket(listener net.PacketConn) error {
 
 func (s *Server) Close() error {
 	if s.network() == N.NetworkTCP {
-		return common.Close(s.httpServer)
+		err := common.Close(s.httpServer)
+		// The serving scope closes its owned listener before this transport.
+		// Serve may still track it while retiring; a second close is expected.
+		if errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		return err
 	}
 	return common.Close(s.http3Server)
 }
