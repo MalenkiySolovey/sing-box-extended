@@ -83,6 +83,7 @@ type server struct {
 	userCounts map[string]int
 	logger     log.ContextLogger
 	tokenMap   map[string]*realmUser
+	closed     bool
 }
 
 func newServer(logger log.ContextLogger, tokenMap map[string]*realmUser) *server {
@@ -198,6 +199,7 @@ func (s *server) removeExpiredSession(sess *realmSession) bool {
 func (s *server) closeAll() {
 	s.access.Lock()
 	defer s.access.Unlock()
+	s.closed = true
 	for _, sess := range s.sessions {
 		s.removeSessionLocked(sess)
 	}
@@ -274,6 +276,12 @@ func (s *server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.access.Lock()
+	if s.closed {
+		s.access.Unlock()
+		render.Status(r, http.StatusServiceUnavailable)
+		render.JSON(w, r, render.M{"error": "service_closed", "message": "realm service is closed"})
+		return
+	}
 	if _, exists := s.realms[id]; exists {
 		s.access.Unlock()
 		render.Status(r, http.StatusConflict)

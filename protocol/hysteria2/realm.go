@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -33,13 +34,17 @@ func RegisterRealmService(registry *boxService.Registry) {
 
 type RealmService struct {
 	boxService.Adapter
-	ctx        context.Context
-	cancel     context.CancelFunc
-	logger     log.ContextLogger
-	listener   *listener.Listener
-	tlsConfig  tls.ServerConfig
-	httpServer *http.Server
-	server     *server
+	ctx              context.Context
+	cancel           context.CancelFunc
+	logger           log.ContextLogger
+	listener         *listener.Listener
+	tlsConfig        tls.ServerConfig
+	httpServer       *http.Server
+	server           *server
+	connectionAccess sync.Mutex
+	connections      map[*realmConn]struct{}
+	serveDone        chan struct{}
+	handlers         sync.WaitGroup
 }
 
 func NewRealmService(ctx context.Context, logger log.ContextLogger, tag string, options option.HysteriaRealmServiceOptions) (adapter.Service, error) {
@@ -98,6 +103,7 @@ func NewRealmService(ctx context.Context, logger log.ContextLogger, tag string, 
 			Listen:  options.ListenOptions,
 		}),
 		httpServer: &http.Server{
+			BaseContext: func(net.Listener) context.Context { return ctx },
 			//nolint:staticcheck
 			Handler: h2c.NewHandler(chiRouter, &http2.Server{
 				IdleTimeout:                  time.Duration(options.IdleTimeout),
@@ -110,8 +116,24 @@ func NewRealmService(ctx context.Context, logger log.ContextLogger, tag string, 
 				return log.ContextWithNewID(ctx)
 			},
 		},
-		server: server,
+		server:      server,
+		connections: make(map[*realmConn]struct{}),
 	}
+	handler := s.httpServer.Handler
+	s.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The same gate orders handler admission against shutdown's snapshot.
+		// h2c ServeHTTP owns its hijacked connection until ServeConn returns.
+		s.connectionAccess.Lock()
+		if s.ctx.Err() != nil {
+			s.connectionAccess.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		s.handlers.Add(1)
+		s.connectionAccess.Unlock()
+		defer s.handlers.Done()
+		handler.ServeHTTP(w, r)
+	})
 	if options.TLS != nil {
 		tlsConfig, err := tls.NewServer(ctx, logger, common.PtrValueOrDefault(options.TLS))
 		if err != nil {
@@ -144,23 +166,92 @@ func (s *RealmService) Start(stage adapter.StartStage, scope *adapter.Scope) err
 	if err != nil {
 		return err
 	}
-	scope.Add(s.listener.Close)
 	scope.Add(func() error {
-		s.server.closeAll()
-		return nil
+		err := s.listener.Close()
+		if errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		return err
 	})
+	// h2c hijacks its TCP connection, so http.Server.Close alone cannot
+	// retire it. Track the accepted socket before either HTTP or TLS owns it.
+	tcpListener = &realmListener{Listener: tcpListener, owner: s}
 	if s.tlsConfig != nil {
 		if !common.Contains(s.tlsConfig.NextProtos(), http2.NextProtoTLS) {
 			s.tlsConfig.SetNextProtos(append([]string{"h2"}, s.tlsConfig.NextProtos()...))
 		}
 		tcpListener = aTLS.NewListener(tcpListener, s.tlsConfig)
 	}
+	s.serveDone = make(chan struct{})
 	go func() {
-		err = s.httpServer.Serve(tcpListener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		defer close(s.serveDone)
+		err := s.httpServer.Serve(tcpListener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && s.ctx.Err() == nil {
 			s.logger.Error("serve error: ", err)
 		}
 	}()
-	scope.Add(s.httpServer.Close)
+	scope.Add(s.closeHTTP)
 	return nil
+}
+
+func (s *RealmService) closeHTTP() error {
+	s.cancel()
+	s.server.closeAll()
+	s.connectionAccess.Lock()
+	connections := make([]*realmConn, 0, len(s.connections))
+	for conn := range s.connections {
+		connections = append(connections, conn)
+	}
+	s.connectionAccess.Unlock()
+	var result error
+	for _, conn := range connections {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			result = errors.Join(result, err)
+		}
+	}
+	if err := s.httpServer.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		result = errors.Join(result, err)
+	}
+	<-s.serveDone
+	s.handlers.Wait()
+	return result
+}
+
+type realmListener struct {
+	net.Listener
+	owner *RealmService
+}
+
+func (l *realmListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tracked := &realmConn{Conn: conn, owner: l.owner}
+	l.owner.connectionAccess.Lock()
+	if l.owner.ctx.Err() != nil {
+		l.owner.connectionAccess.Unlock()
+		_ = conn.Close()
+		return nil, net.ErrClosed
+	}
+	l.owner.connections[tracked] = struct{}{}
+	l.owner.connectionAccess.Unlock()
+	return tracked, nil
+}
+
+type realmConn struct {
+	net.Conn
+	owner *RealmService
+	once  sync.Once
+	err   error
+}
+
+func (c *realmConn) Close() error {
+	c.once.Do(func() {
+		c.err = c.Conn.Close()
+		c.owner.connectionAccess.Lock()
+		delete(c.owner.connections, c)
+		c.owner.connectionAccess.Unlock()
+	})
+	return c.err
 }
