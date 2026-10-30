@@ -51,6 +51,23 @@ type udpEgressPacketConn struct {
 	*tun.UDPEgressConn
 }
 
+// The SDK closes its supplied transport. Scope must also retire it when
+// construction or device startup fails before the SDK takes ownership.
+type serverListener struct {
+	net.Listener
+	close func() error
+}
+
+func (l *serverListener) Close() error { return l.close() }
+
+type serverPacketConn struct {
+	net.PacketConn
+	close func() error
+}
+
+func (c *serverPacketConn) Close() error  { return c.close() }
+func (c *serverPacketConn) Upstream() any { return c.PacketConn }
+
 func (c *udpEgressPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	dataLength, source, err := c.ReadFromUDPAddrPort(buffer)
 	if err != nil {
@@ -231,7 +248,15 @@ func (s *ServerEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) e
 	if err != nil {
 		return err
 	}
-	scope.Add(s.listener.Close)
+	if streamListener != nil {
+		closeTransport := sync.OnceValue(streamListener.Close)
+		streamListener = &serverListener{Listener: streamListener, close: closeTransport}
+		scope.Add(closeTransport)
+	} else {
+		closeTransport := sync.OnceValue(packetConn.Close)
+		packetConn = &serverPacketConn{PacketConn: packetConn, close: closeTransport}
+		scope.Add(closeTransport)
+	}
 	serverOptions := s.serverOptions
 	if streamListener != nil {
 		serverOptions.Transport.ListenAddress = streamListener.Addr().String()
@@ -242,9 +267,6 @@ func (s *ServerEndpoint) Start(stage adapter.StartStage, scope *adapter.Scope) e
 	serverOptions.Transport.PacketConn = packetConn
 	server, err := ovpn.NewServer(serverOptions)
 	if err != nil {
-		if packetConn != nil {
-			_ = packetConn.Close()
-		}
 		return err
 	}
 	s.server = server
