@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/kmutex"
 	"github.com/sagernet/sing-box/log"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -52,6 +53,44 @@ func failoverMustFinish(t *testing.T, done <-chan struct{}) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("failover lifecycle remained blocked")
+	}
+}
+
+func TestFailoverScopeJoinsOutboundRetirement(t *testing.T) {
+	logger := log.NewNOPFactory().Logger()
+	scope := adapter.NewScope(t.Context(), logger)
+	t.Cleanup(func() { _ = scope.Close() })
+	raw, peer := net.Pipe()
+	t.Cleanup(func() { _ = peer.Close() })
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	observed := &observedFailoverConn{Conn: raw, onClose: func() { close(entered); <-release }}
+	f := &Failover{ctx: t.Context(), dial: func(context.Context, string, M.Socksaddr) (net.Conn, error) { return observed, nil }}
+	if err := f.Start(adapter.StartStateInitialize, scope); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _ = ReadRequest(peer) }()
+	conn, err := f.DialContext(t.Context(), N.NetworkTCP, Destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() { _ = scope.Close(); close(closed) }()
+	failoverMustFinish(t, entered)
+	select {
+	case <-closed:
+		t.Fatal("serving scope returned before its outbound stream retired")
+	case <-time.After(25 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	failoverMustFinish(t, closed)
+	if _, err := conn.Write([]byte("retired")); err == nil {
+		t.Fatal("retired stream accepted a write")
+	}
+	if next, err := f.DialContext(t.Context(), N.NetworkTCP, Destination); err == nil {
+		_ = next.Close()
+		t.Fatal("retired scope admitted a new stream")
 	}
 }
 
