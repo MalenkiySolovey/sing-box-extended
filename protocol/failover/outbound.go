@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gofrs/uuid/v5"
@@ -32,6 +33,10 @@ type Failover struct {
 	logger    logger.ContextLogger
 	dial      DialStrategy
 	uotClient *uot.Client
+	access    sync.Mutex
+	closed    bool
+	dials     sync.WaitGroup
+	sessions  map[*failoverConn]chan struct{}
 }
 
 func NewFailover(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.FailoverOutboundOptions) (adapter.Outbound, error) {
@@ -69,6 +74,7 @@ func NewFailover(ctx context.Context, router adapter.Router, logger log.ContextL
 func (f *Failover) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage == adapter.StartStateInitialize {
 		f.ctx = scope.Context()
+		scope.Add(f.close)
 	}
 	for _, outbound := range f.outbounds {
 		lifecycle, isLifecycle := outbound.(adapter.Lifecycle)
@@ -80,6 +86,25 @@ func (f *Failover) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (f *Failover) close() error {
+	f.access.Lock()
+	f.closed = true
+	sessions := make(map[*failoverConn]chan struct{}, len(f.sessions))
+	for conn, done := range f.sessions {
+		sessions[conn] = done
+	}
+	f.access.Unlock()
+	// Cancellation callbacks run asynchronously. Retire and join this parent's
+	// streams before Scope returns; canonical borrowed outbounds stay owned by
+	// their manager. A Close already in progress still owes its completion.
+	for conn, done := range sessions {
+		_ = conn.Close()
+		<-done
+	}
+	f.dials.Wait()
 	return nil
 }
 
@@ -118,6 +143,14 @@ func (f *Failover) DialContext(ctx context.Context, network string, destination 
 	if N.NetworkName(network) == N.NetworkUDP {
 		return f.uotClient.DialContext(ctx, network, destination)
 	}
+	f.access.Lock()
+	if f.closed || f.ctx.Err() != nil {
+		f.access.Unlock()
+		return nil, net.ErrClosed
+	}
+	f.dials.Add(1)
+	f.access.Unlock()
+	defer f.dials.Done()
 	sessionUUID, err := uuid.NewV4()
 	if err != nil {
 		return nil, err
@@ -134,9 +167,32 @@ func (f *Failover) DialContext(ctx context.Context, network string, destination 
 	}
 	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopServing := context.AfterFunc(f.ctx, cancel)
-	return NewFailoverConn(sessionCtx, conn, func(ctx context.Context) (net.Conn, error) {
+	f.access.Lock()
+	if f.closed || f.ctx.Err() != nil {
+		f.access.Unlock()
+		stopServing()
+		cancel()
+		_ = conn.Close()
+		return nil, net.ErrClosed
+	}
+	done := make(chan struct{})
+	var session *failoverConn
+	session = NewFailoverConn(sessionCtx, conn, func(ctx context.Context) (net.Conn, error) {
 		return f.dialSession(ctx, network, &Request{Command: CommandReconnect, UUID: sessionUUID, Destination: destination})
-	}, func() { stopServing(); cancel() }), nil
+	}, func() {
+		defer close(done)
+		stopServing()
+		cancel()
+		f.access.Lock()
+		delete(f.sessions, session)
+		f.access.Unlock()
+	})
+	if f.sessions == nil {
+		f.sessions = make(map[*failoverConn]chan struct{})
+	}
+	f.sessions[session] = done
+	f.access.Unlock()
+	return session, nil
 }
 
 func (f *Failover) dialSession(ctx context.Context, network string, request *Request) (conn net.Conn, retErr error) {
