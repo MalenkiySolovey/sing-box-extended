@@ -92,3 +92,5 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 | EXTENDED-0058 | Retire and join Realm HTTP/2 sockets and handlers, cancel request contexts, revoke old-generation registration and normalize expected listener closure; LOW, generic, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after equivalent upstream scoped retirement | ./protocol/hysteria2 -race -run TestRealmScopeRetiresHTTP2Authority; Panel native Realm HTTP/2 authentication, quota and closed-generation regression |
 
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
+
+| EXTENDED-0059 | Share OpenVPN supplied TCP/UDP transport retirement across SDK and Scope, retaining failed-start cleanup; LOW, generic, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after equivalent upstream ownership | ./protocol/openvpn -race -run TestOpenVPNServerScopeOwnsTransportRetirement; Panel native TLS/static server lifecycle |
