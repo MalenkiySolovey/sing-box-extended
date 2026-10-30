@@ -94,3 +94,6 @@ All retained changes are ENGINE_PATCH_REQUIRED. Detailed problem, adapter bounda
 Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3ee893a171947038e19..solovey/extended-patches. The queue verifier checks order, one-parent ancestry, pristine identity and the code tree.
 
 | EXTENDED-0059 | Share OpenVPN supplied TCP/UDP transport retirement across SDK and Scope, retaining failed-start cleanup; LOW, generic, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after equivalent upstream ownership | ./protocol/openvpn -race -run TestOpenVPNServerScopeOwnsTransportRetirement; Panel native TLS/static server lifecycle |
+
+
+| EXTENDED-0060 | Join Failover owned-stream Close and admitted dials before serving Scope returns; LOW-MEDIUM, generic lifecycle, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after verified upstream synchronous retirement | ./protocol/failover -race -run TestFailoverScopeJoinsOutboundRetirement; Panel native group retirement |
