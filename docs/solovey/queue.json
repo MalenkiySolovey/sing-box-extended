@@ -7,7 +7,7 @@
   "upstreamTree": "dae57a05c1392b57f03f03e987ed5807b45e14bc",
   "pristineRef": "refs/heads/mirror/extended",
   "patchBranch": "solovey/extended-patches",
-  "codeTree": "af12f3bc73ccbde5585d9e963634ab61f201692b",
+  "codeTree": "de9a4d28cf1751be91c33f0b0f2716845bc0645b",
   "patchIds": [
     "EXTENDED-0001",
     "EXTENDED-0002",
@@ -69,7 +69,10 @@
     "EXTENDED-0058",
     "EXTENDED-0059",
     "EXTENDED-0060",
-    "EXTENDED-0061"
+    "EXTENDED-0061",
+    "EXTENDED-0062",
+    "EXTENDED-0063",
+    "EXTENDED-0064"
   ],
   "metadataPaths": [
     ".github/workflows/solovey-patch-queue.yml",
@@ -111,7 +114,8 @@
     "./dns/transport",
     "./dns/transport/fallback",
     "./protocol/hysteria2",
-    "./protocol/openvpn"
+    "./protocol/openvpn",
+    "./protocol/limiter/..."
   ],
   "buildTags": "with_quic,with_grpc,with_utls,with_gvisor,with_openvpn",
   "historicalPatchedCommit": "541794dcd3e50f1254a09131bb47ddae01e2ffb7",
