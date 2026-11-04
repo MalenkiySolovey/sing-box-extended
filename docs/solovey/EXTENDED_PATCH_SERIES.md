@@ -97,3 +97,5 @@ Inspect the current exact commits with git log --reverse d9442d14b19ddd02605bf3e
 
 
 | EXTENDED-0060 | Join Failover owned-stream Close and admitted dials before serving Scope returns; LOW-MEDIUM, generic lifecycle, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after verified upstream synchronous retirement | ./protocol/failover -race -run TestFailoverScopeJoinsOutboundRetirement; Panel native group retirement |
+
+| EXTENDED-0061 | Reject WireGuard receive budgets below both native UDP batches before construction; LOW, generic validation/lifecycle, wire-insensitive, INTEROP_NOT_REQUIRED, UPSTREAM_READY_NOT_SUBMITTED; remove after verified upstream equivalent admission and retirement | ./transport/wireguard ./protocol/wireguard -race; Panel native WireGuard restart |
