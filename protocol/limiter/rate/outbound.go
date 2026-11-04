@@ -49,6 +49,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		for _, user := range options.Users {
 			userStrategy, err := CreateStrategy(user.Strategy, user.ConnectionType, int(user.Count), user.Interval.Build())
 			if err != nil {
+				_ = NewUsersRateStrategy(usersStrategies).close()
 				return nil, err
 			}
 			usersStrategies[user.Name] = userStrategy
@@ -66,6 +67,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	r := route.NewRouter(ctx, logFactory, F.ToString("router/", C.TypeRateLimiter, "[", tag, "]"), options.Route, option.DNSOptions{})
 	err = r.Initialize(options.Route.Rules, options.Route.RuleSet)
 	if err != nil {
+		_ = closeStrategy(strategy)
 		return nil, err
 	}
 	outbound := &Outbound{
@@ -86,6 +88,9 @@ func (h *Outbound) Network() []string {
 }
 
 func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage == adapter.StartStateInitialize {
+		scope.Add(func() error { return closeStrategy(h.strategy) })
+	}
 	if stage == adapter.StartStateStart {
 		detour, loaded := h.outbound.Outbound(h.outboundTag)
 		if !loaded {

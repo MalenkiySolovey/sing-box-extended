@@ -2,6 +2,7 @@ package rate
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,8 +26,11 @@ type (
 )
 
 type DefaultRateStrategy struct {
-	limiter core.Limiter
-	queue   chan struct{}
+	limiter  core.Limiter
+	queue    chan struct{}
+	done     chan struct{}
+	once     sync.Once
+	closeErr error
 }
 
 func NewDefaultRateStrategy(strategy string, count int, interval time.Duration) (*DefaultRateStrategy, error) {
@@ -38,14 +42,21 @@ func NewDefaultRateStrategy(strategy string, count int, interval time.Duration) 
 	if err != nil {
 		return nil, err
 	}
-	return &DefaultRateStrategy{limiter: limiter, queue: make(chan struct{}, 1)}, nil
+	return &DefaultRateStrategy{limiter: limiter, queue: make(chan struct{}, 1), done: make(chan struct{})}, nil
 }
 
 func (s *DefaultRateStrategy) request(ctx context.Context, metadata *adapter.InboundContext) error {
 	select {
+	case <-s.done:
+		return os.ErrClosed
+	default:
+	}
+	select {
 	case s.queue <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.done:
+		return os.ErrClosed
 	}
 	defer func() {
 		<-s.queue
@@ -61,13 +72,19 @@ func (s *DefaultRateStrategy) request(ctx context.Context, metadata *adapter.Inb
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-s.done:
+			return os.ErrClosed
 		}
 	}
 	return nil
 }
 
 func (s *DefaultRateStrategy) close() error {
-	return s.limiter.Close()
+	s.once.Do(func() {
+		close(s.done)
+		s.closeErr = s.limiter.Close()
+	})
+	return s.closeErr
 }
 
 type ConnectionRateStrategy struct {
@@ -75,10 +92,19 @@ type ConnectionRateStrategy struct {
 	createStrategy func() (*DefaultRateStrategy, error)
 	limiters       *cache.Cache[string, *DefaultRateStrategy]
 
-	mtx sync.Mutex
+	mtx    sync.Mutex
+	closed bool
 }
 
 func NewConnectionRateStrategy(connIDGetter ConnIDGetter, strategy string, count int, interval time.Duration) (*ConnectionRateStrategy, error) {
+	// Validate before starting the cache janitor or deferring errors to a dial.
+	check, err := NewDefaultRateStrategy(strategy, count, interval)
+	if err != nil {
+		return nil, err
+	}
+	if err := check.close(); err != nil {
+		return nil, err
+	}
 	limiters := cache.New[string, *DefaultRateStrategy](interval, time.Second)
 	limiters.OnEvicted(func(s string, strategy *DefaultRateStrategy) {
 		strategy.close()
@@ -98,10 +124,15 @@ func (s *ConnectionRateStrategy) request(ctx context.Context, metadata *adapter.
 		return E.New("id not found")
 	}
 	s.mtx.Lock()
+	if s.closed {
+		s.mtx.Unlock()
+		return os.ErrClosed
+	}
 	strategy, ok := s.limiters.Get(id)
 	if !ok {
 		newStrategy, err := s.createStrategy()
 		if err != nil {
+			s.mtx.Unlock()
 			return err
 		}
 		s.limiters.SetDefault(id, newStrategy)
@@ -111,6 +142,16 @@ func (s *ConnectionRateStrategy) request(ctx context.Context, metadata *adapter.
 	}
 	s.mtx.Unlock()
 	return strategy.request(ctx, metadata)
+}
+
+func (s *ConnectionRateStrategy) close() error {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	if !s.closed {
+		s.closed = true
+		s.limiters.Close()
+	}
+	return nil
 }
 
 type UsersRateStrategy struct {
@@ -126,16 +167,35 @@ func NewUsersRateStrategy(strategies map[string]RateStrategy) *UsersRateStrategy
 
 func (s *UsersRateStrategy) request(ctx context.Context, metadata *adapter.InboundContext) error {
 	s.mtx.Lock()
-	defer s.mtx.Unlock()
 	var user string
 	if metadata != nil {
 		user = metadata.User
 	}
 	strategy, ok := s.strategies[user]
+	s.mtx.Unlock()
 	if ok {
 		return strategy.request(ctx, metadata)
 	}
 	return E.New("user strategy not found: ", user)
+}
+
+func closeStrategy(strategy RateStrategy) error {
+	if closer, ok := strategy.(interface{ close() error }); ok {
+		return closer.close()
+	}
+	return nil
+}
+
+func (s *UsersRateStrategy) close() error {
+	s.mtx.Lock()
+	strategies := s.strategies
+	s.strategies = nil
+	s.mtx.Unlock()
+	var err error
+	for _, strategy := range strategies {
+		err = E.Errors(err, closeStrategy(strategy))
+	}
+	return err
 }
 
 type ManagerRateStrategy struct {
