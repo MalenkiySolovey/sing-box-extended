@@ -25,14 +25,11 @@ func (conn *connWithTrafficLimiter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := conn.Conn.Write(p)
+	accountErr := conn.limiter.Add(uint64(n))
 	if err != nil {
-		return 0, err
+		return n, err
 	}
-	err = conn.limiter.Add(uint64(n))
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
+	return n, accountErr
 }
 
 type connWithUploadTrafficLimiter struct {
@@ -47,14 +44,11 @@ func (conn *connWithUploadTrafficLimiter) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := conn.Conn.Read(p)
+	accountErr := conn.limiter.Add(uint64(n))
 	if err != nil {
-		return 0, err
+		return n, err
 	}
-	err = conn.limiter.Add(uint64(n))
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
+	return n, accountErr
 }
 
 type packetConnWithTrafficLimiter struct {
@@ -77,14 +71,11 @@ func (conn *packetConnWithTrafficLimiter) WriteTo(p []byte, addr net.Addr) (int,
 		return 0, err
 	}
 	n, err := conn.PacketConn.WriteTo(p, addr)
+	accountErr := conn.limiter.Add(uint64(n))
 	if err != nil {
-		return 0, err
+		return n, err
 	}
-	err = conn.limiter.Add(uint64(n))
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
+	return n, accountErr
 }
 
 type packetConnWithUploadTrafficLimiter struct {
@@ -99,14 +90,11 @@ func (conn *packetConnWithUploadTrafficLimiter) ReadFrom(p []byte) (int, net.Add
 		return 0, nil, err
 	}
 	n, addr, err := conn.PacketConn.ReadFrom(p)
+	accountErr := conn.limiter.Add(uint64(n))
 	if err != nil {
-		return n, nil, err
+		return n, addr, err
 	}
-	err = conn.limiter.Add(uint64(n))
-	if err != nil {
-		return 0, nil, err
-	}
-	return n, addr, nil
+	return n, addr, accountErr
 }
 
 func connWithDownloadTrafficWrapper(ctx context.Context, conn net.Conn, limiter TrafficLimiter, reverse bool) net.Conn {
