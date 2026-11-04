@@ -46,6 +46,17 @@ type Endpoint struct {
 }
 
 func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
+	if options.PreallocatedBuffersPerPool != 0 {
+		if _, udpListener := common.Cast[dialer.UDPListener](options.Dialer); udpListener {
+			// IPv4 and IPv6 receivers each acquire a complete batch before
+			// entering the socket read. A smaller shared pool can strand both
+			// receivers in allocation, where closing the bind cannot wake them.
+			minimum := uint32(2 * conn.NewDefaultBind(nil).BatchSize())
+			if options.PreallocatedBuffersPerPool < minimum {
+				return nil, E.New("preallocated_buffers_per_pool must be at least ", minimum, " for batched UDP")
+			}
+		}
+	}
 	if options.PrivateKey == "" {
 		return nil, E.New("missing private key")
 	}

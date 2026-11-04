@@ -14,13 +14,46 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/wireguard-go/conn"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestEndpointRejectsUndersizedBatchedReceivePool(t *testing.T) {
+	ctx := context.Background()
+	d, err := dialer.NewDefault(ctx, option.DialerOptions{})
+	require.NoError(t, err)
+	private, _, _ := newTestKey(t)
+	minimum := uint32(2 * conn.NewDefaultBind(nil).BatchSize())
+	options := EndpointOptions{Context: ctx, Logger: log.NewNOPFactory().Logger(), Dialer: d,
+		Address: []netip.Prefix{netip.MustParsePrefix("10.0.0.1/24")}, PrivateKey: private}
+	for _, budget := range []uint32{1, minimum - 1} {
+		options.PreallocatedBuffersPerPool = budget
+		endpoint, err := NewEndpoint(options)
+		if endpoint != nil {
+			require.NoError(t, endpoint.Close())
+		}
+		require.ErrorContains(t, err, "preallocated_buffers_per_pool")
+	}
+	// A sufficient positive budget must still start and retire the real bind.
+	options.PreallocatedBuffersPerPool = minimum
+	endpoint, err := NewEndpoint(options)
+	require.NoError(t, err)
+	require.NoError(t, endpoint.Start(false))
+	closed := make(chan error, 1)
+	go func() { closed <- endpoint.Close() }()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("sufficient receive budget did not retire")
+	}
+}
 
 // newTestKey returns a fresh X25519 keypair: base64 private (for the endpoint)
 // and base64 public (for a peer). The transport encodes the base64 public key
