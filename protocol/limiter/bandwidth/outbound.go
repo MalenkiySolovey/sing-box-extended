@@ -51,7 +51,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	case "users":
 		usersStrategies := make(map[string]BandwidthStrategy, len(options.Users))
 		for _, user := range options.Users {
-			userStrategy, err := CreateStrategy(user.Strategy, user.Mode, user.ConnectionType, options.Speed.Value(), options.FlowKeys)
+			userStrategy, err := CreateStrategy(user.Strategy, user.Mode, user.ConnectionType, user.Speed.Value(), options.FlowKeys)
 			if err != nil {
 				return nil, err
 			}
