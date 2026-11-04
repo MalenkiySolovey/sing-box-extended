@@ -41,10 +41,13 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if options.Route.Final == "" {
 		return nil, E.New("missing final outbound")
 	}
-	strategy := NewManagerTrafficStrategy()
+	strategy, err := configuredStrategy(options)
+	if err != nil {
+		return nil, err
+	}
 	logFactory := service.FromContext[log.Factory](ctx)
 	r := route.NewRouter(ctx, logFactory, F.ToString("router/", C.TypeTrafficLimiter, "[", tag, "]"), options.Route, option.DNSOptions{})
-	err := r.Initialize(options.Route.Rules, options.Route.RuleSet)
+	err = r.Initialize(options.Route.Rules, options.Route.RuleSet)
 	if err != nil {
 		return nil, err
 	}
@@ -59,6 +62,41 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		router:      r,
 	}
 	return outbound, nil
+}
+
+func configuredStrategy(options option.TrafficLimiterOutboundOptions) (TrafficStrategy, error) {
+	create := func(item option.TrafficLimiterUser) (TrafficStrategy, error) {
+		if item.Strategy != "bypass" && item.Total == nil {
+			return nil, E.New("missing traffic total")
+		}
+		return CreateStrategy(&staticTrafficLimiter{total: item.Total.Value()}, item.Strategy, item.Mode)
+	}
+	switch options.Strategy {
+	case "":
+		return nil, E.New("missing strategy")
+	case "manager":
+		return NewManagerTrafficStrategy(), nil
+	case "users":
+		strategies := make(map[string]TrafficStrategy, len(options.Users))
+		for _, user := range options.Users {
+			if user.Name == "" {
+				return nil, E.New("missing user name")
+			}
+			if _, exists := strategies[user.Name]; exists {
+				return nil, E.New("duplicate user name")
+			}
+			strategy, err := create(user)
+			if err != nil {
+				return nil, err
+			}
+			strategies[user.Name] = strategy
+		}
+		strategy := NewManagerTrafficStrategy()
+		strategy.UpdateStrategies(strategies)
+		return strategy, nil
+	default:
+		return create(option.TrafficLimiterUser{Strategy: options.Strategy, Mode: options.Mode, Total: options.Total})
+	}
 }
 
 func (h *Outbound) Network() []string {
