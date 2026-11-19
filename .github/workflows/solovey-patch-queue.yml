@@ -16,6 +16,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: '1'
+      GOWORK: 'off'
     steps:
       - name: Fetch the exact public queue head
         shell: bash
@@ -40,11 +41,7 @@ jobs:
           set -euo pipefail
           cp go.mod .solovey-test.mod
           cp go.sum .solovey-test.sum
-          companion=$(python scripts/verify-solovey-queue.py companion)
-          if [[ -n "$companion" ]]; then
-            go mod edit -modfile=.solovey-test.mod "-replace=github.com/sagernet/sing-quic=$companion"
-            go mod download -modfile=.solovey-test.mod "$companion"
-          fi
+          python scripts/verify-solovey-queue.py prepare-test-modfile
           packages=$(python scripts/verify-solovey-queue.py packages)
           tags=$(python scripts/verify-solovey-queue.py tags)
           go test -mod=readonly -modfile=.solovey-test.mod -race -count=3 -timeout=5m -tags "$tags" $packages
