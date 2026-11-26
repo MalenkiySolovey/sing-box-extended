@@ -189,9 +189,11 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 			buf.ReleaseMulti(buffers)
 			return err
 		}
-	}
-	for _, buffer := range buffers {
-		conn = bufio.NewCachedConn(conn, buffer)
+		conn = wrapGuardedStreamReplay(conn, buffers)
+	} else {
+		for _, buffer := range buffers {
+			conn = bufio.NewCachedConn(conn, buffer)
+		}
 	}
 	if selectedRule != nil {
 		metadata.RouteRule = selectedRule.String()
