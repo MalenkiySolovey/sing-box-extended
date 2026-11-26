@@ -75,8 +75,15 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 	case <-r.ctx.Done():
 		return r.ctx.Err()
 	}
+	guard := adapter.StreamRouteGuardFromContext(ctx)
+	if guard != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	//nolint:staticcheck
 	if metadata.InboundDetour != "" {
+		if guard != nil {
+			return adapter.ErrUnguardedStreamAction
+		}
 		if metadata.LastInbound == metadata.InboundDetour {
 			return E.New("routing loop on detour: ", metadata.InboundDetour)
 		}
@@ -106,6 +113,9 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		return E.New("global UoT (legacy) not supported since sing-box v1.7.0.")
 	}
 	if metadata.InboundType == C.TypeTun && metadata.Protocol == C.ProtocolDNS {
+		if guard != nil {
+			return adapter.ErrUnguardedStreamAction
+		}
 		N.CloseOnHandshakeFailure(conn, onClose, r.hijackDNSStream(ctx, conn, metadata))
 		return nil
 	}
@@ -151,6 +161,10 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 			}
 			return action.Error(ctx)
 		case *R.RuleActionHijackDNS:
+			if guard != nil {
+				buf.ReleaseMulti(buffers)
+				return adapter.ErrUnguardedStreamAction
+			}
 			for _, buffer := range buffers {
 				conn = bufio.NewCachedConn(conn, buffer)
 			}
@@ -166,6 +180,16 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		selectedOutbound = r.defaultOutbound
 	}
 
+	if guard != nil {
+		if err := ctx.Err(); err != nil {
+			buf.ReleaseMulti(buffers)
+			return err
+		}
+		if err := guard(metadata, selectedOutbound); err != nil {
+			buf.ReleaseMulti(buffers)
+			return err
+		}
+	}
 	for _, buffer := range buffers {
 		conn = bufio.NewCachedConn(conn, buffer)
 	}
